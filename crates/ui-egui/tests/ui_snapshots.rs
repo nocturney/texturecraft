@@ -504,7 +504,7 @@ fn rail_window_snapshots() {
 fn i18n_snapshots() {
     let Some(output_dir) = std::env::var_os("TC_UI_SNAPSHOTS").map(PathBuf::from) else { return };
     std::fs::create_dir_all(&output_dir).unwrap();
-    for code in ["en", "es", "ar"] {
+    for code in ["en", "es", "ar", "he"] {
         assert!(texturecraft_ui_egui::i18n::available(code), "build with migrated catalogs for {code}");
         let session = texturecraft_engine::sample_session(128, 32).unwrap();
         let mut harness =

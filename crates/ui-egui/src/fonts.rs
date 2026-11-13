@@ -38,10 +38,11 @@ pub enum Script {
     Chinese,
     Korean,
     Arabic,
+    Hebrew,
 }
 
 impl Script {
-    pub const ALL: [Script; 4] = [Script::Japanese, Script::Chinese, Script::Korean, Script::Arabic];
+    pub const ALL: [Script; 5] = [Script::Japanese, Script::Chinese, Script::Korean, Script::Arabic, Script::Hebrew];
 
     /// The script a UI language needs beyond Latin.
     pub fn of_language(code: &str) -> Option<Script> {
@@ -50,6 +51,7 @@ impl Script {
             "zh-Hans" => Some(Script::Chinese),
             "ko" => Some(Script::Korean),
             "ar" => Some(Script::Arabic),
+            "he" => Some(Script::Hebrew),
             _ => None,
         }
     }
@@ -61,6 +63,7 @@ impl Script {
             Script::Chinese => "Hans",
             Script::Korean => "Kore",
             Script::Arabic => "Arab",
+            Script::Hebrew => "Hebr",
         }
     }
 
@@ -76,6 +79,7 @@ impl Script {
                 Script::Chinese => &["msyh.ttc", "simsun.ttc", "simhei.ttf"],
                 Script::Korean => &["malgun.ttf", "gulim.ttc"],
                 Script::Arabic => &["segoeui.ttf", "tahoma.ttf", "arial.ttf"],
+                Script::Hebrew => &["segoeui.ttf", "arial.ttf", "tahoma.ttf"],
             };
             v.extend(files.iter().map(|f| (fonts.join(f), 0)));
         } else if cfg!(target_os = "macos") {
@@ -86,9 +90,19 @@ impl Script {
                 }
                 Script::Korean => &["/System/Library/Fonts/AppleSDGothicNeo.ttc"],
                 Script::Arabic => &["/System/Library/Fonts/SFArabic.ttf", "/System/Library/Fonts/Supplemental/GeezaPro.ttc"],
+                Script::Hebrew => &["/System/Library/Fonts/Supplemental/Arial Hebrew.ttf", "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"],
             };
             v.extend(files.iter().map(|f| (PathBuf::from(f), 0)));
             v.push((PathBuf::from("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"), 0));
+        } else if self == Script::Hebrew {
+            for f in [
+                "/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf",
+                "/usr/share/fonts/noto/NotoSansHebrew-Regular.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+            ] {
+                v.push((PathBuf::from(f), 0));
+            }
         } else if self == Script::Arabic {
             for f in [
                 "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
@@ -104,7 +118,7 @@ impl Script {
         } else {
             // Noto Sans CJK collections hold JP, KR, SC, TC and HK faces, in that order.
             let face = match self {
-                Script::Japanese | Script::Arabic => 0,
+                Script::Japanese | Script::Arabic | Script::Hebrew => 0,
                 Script::Korean => 1,
                 Script::Chinese => 2,
             };
@@ -277,6 +291,8 @@ mod tests {
         assert_eq!(Script::of_language("zh-Hans"), Some(Script::Chinese));
         assert_eq!(Script::of_language("ko"), Some(Script::Korean));
         assert_eq!(Script::of_language("ar"), Some(Script::Arabic));
+        assert_eq!(Script::of_language("he"), Some(Script::Hebrew));
+        assert_eq!(Script::Hebrew.iso(), "Hebr");
         assert_eq!(Script::of_language("de"), None);
         for l in &crate::i18n::LANGUAGES {
             // Past the Latin blocks and their diacritics.

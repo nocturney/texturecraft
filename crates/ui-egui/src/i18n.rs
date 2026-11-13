@@ -37,7 +37,7 @@ pub struct Language {
     pub english: &'static str,
 }
 
-const COUNT: usize = 10;
+const COUNT: usize = 11;
 
 pub static LANGUAGES: [Language; COUNT] = [
     Language { code: "en", name: "English", english: "English" },
@@ -49,6 +49,7 @@ pub static LANGUAGES: [Language; COUNT] = [
     Language { code: "ja", name: "日本語", english: "Japanese" },
     Language { code: "zh-Hans", name: "简体中文", english: "Chinese (Simplified)" },
     Language { code: "ko", name: "한국어", english: "Korean" },
+    Language { code: "he", name: "עברית", english: "Hebrew" },
     Language { code: "ar", name: "العربية", english: "Arabic" },
 ];
 
@@ -294,9 +295,18 @@ mod tests",
         assert_eq!(trf("Saved {path}", &[("path", &"a.tcraft")]), "Saved a.tcraft");
         assert_eq!(trf("{a} of {b} {c}", &[("a", &1), ("b", &2)]), "1 of 2 {c}");
         assert_eq!(trf("{unclosed", &[]), "{unclosed");
-        for (locale, code) in
-            [("de-AT", "de"), ("pt_PT.UTF-8", "pt-BR"), ("zh-Hant-TW", "zh-Hans"), ("ja", "ja"), ("ko_KR", "ko"), ("ar-EG", "ar"), ("nl-NL", "en"), ("", "en")]
-        {
+        for (locale, code) in [
+            ("de-AT", "de"),
+            ("pt_PT.UTF-8", "pt-BR"),
+            ("zh-Hant-TW", "zh-Hans"),
+            ("ja", "ja"),
+            ("ko_KR", "ko"),
+            ("ar-EG", "ar"),
+            ("he-IL", "he"),
+            ("he_IL.UTF-8", "he"),
+            ("nl-NL", "en"),
+            ("", "en"),
+        ] {
             assert_eq!(language_for_locale(locale), code, "{locale}");
         }
         set_language("de");
@@ -327,6 +337,16 @@ mod tests",
         }
         set_language("es");
         assert_eq!(tr("Layers"), if available("es") { "Capas" } else { "Layers" });
+        set_language("en");
+    }
+
+    #[test]
+    fn hebrew_is_opt_in_only_when_its_catalog_is_embedded() {
+        let _lock = LANGUAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(language_for_locale("he-IL"), "he");
+        assert_eq!(language_for_locale("he_IL.UTF-8"), "he");
+        set_language("he");
+        assert_eq!(current().code, if available("he") { "he" } else { "en" });
         set_language("en");
     }
 

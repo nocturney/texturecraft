@@ -122,7 +122,13 @@ pub fn show(app: &mut TextureCraftApp, ui: &mut Ui) {
         let ends = |n: usize| n as f32 * BUTTON_WIDTH;
         let inset = if bar == TitleBar::Integrated { TRAFFIC_LIGHTS } else { ends(left.len()) + PAD };
         let content = Rect::from_min_max(pos2(rect.left() + inset, rect.top()), pos2(rect.right() - ends(right.len()) - PAD, rect.bottom()));
-        ui.scope_builder(egui::UiBuilder::new().max_rect(content).layout(egui::Layout::left_to_right(Align::Center)), |ui| {
+        // Keep the OS caption buttons in their native positions; mirror only the in-app strip.
+        let hebrew = crate::i18n::current().code == "he";
+        let direction = if hebrew { egui::Layout::right_to_left(Align::Center) } else { egui::Layout::left_to_right(Align::Center) };
+        ui.scope_builder(egui::UiBuilder::new().max_rect(content).layout(direction), |ui| {
+            if hebrew {
+                ui.style_mut().right_to_left = true;
+            }
             paint_icon(ui);
             crate::menus::menu_bar(app, ui);
         });

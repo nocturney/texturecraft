@@ -7,16 +7,36 @@ use texturecraft_core::{Effect, EffectKind, Fill, Filter, Generator, Layer, Laye
 use crate::Session;
 use crate::session::StackTarget;
 
-fn source_json(s: &Source) -> Value {
-    match s {
-        Source::Uniform(v) => json!({ "uniform": v }),
-        Source::Procedural { pattern, low, high } => json!({
-            "procedural": pattern.kind.label(), "scale": pattern.scale, "seed": pattern.seed, "contrast": pattern.contrast, "low": low, "high": high
-        }),
+fn source_json(source: &Source) -> Value {
+    match source {
+        Source::Uniform(value) => json!({ "uniform": value }),
+        Source::Procedural { pattern, low, high, ramp } => {
+            let mut report = json!({
+                "procedural": pattern.kind.label(), "scale": pattern.scale, "seed": pattern.seed, "contrast": pattern.contrast, "low": low, "high": high
+            });
+
+            if !pattern.resolution.is_default() {
+                report["resolution"] =
+                    json!({ "mode": format!("{:?}", pattern.resolution.mode), "custom": pattern.resolution.custom, "factor": pattern.resolution.factor });
+            }
+            if let Some(tile) = &pattern.tile {
+                report["tile"] = crate::procedural_params::tile_report(tile);
+            }
+
+            with_ramp(report, ramp)
+        }
         Source::Image { name, normal_format: NormalFormat::OpenGl } => json!({ "image": name }),
         Source::Image { name, normal_format: NormalFormat::DirectX } => json!({ "image": name, "normalFormat": "directX" }),
-        Source::Anchor { anchor, channel } => json!({ "anchor": anchor.0, "channel": channel.id() }),
+        Source::Anchor { anchor, channel, ramp } => with_ramp(json!({ "anchor": anchor.0, "channel": channel.id() }), ramp),
     }
+}
+
+/// `v` with the gradient map stops of its source as `colors`, when it has any.
+fn with_ramp(mut v: Value, ramp: &[[f32; 3]]) -> Value {
+    if !ramp.is_empty() {
+        v["colors"] = json!(ramp);
+    }
+    v
 }
 
 fn fill_json(f: &Fill) -> Value {
@@ -182,26 +202,29 @@ pub fn texture_set(session: &Session, index: usize) -> Value {
 }
 
 /// The whole session.
-pub fn session(s: &Session) -> Value {
-    let ts = s.ts();
+pub fn session(session: &Session) -> Value {
+    let texture_set = session.ts();
     json!({
-        "project": s.doc.project.name,
-        "mesh": { "source": s.doc.project.mesh, "triangles": s.mesh.triangle_count(), "vertices": s.mesh.vertex_count(), "materials": s.mesh.materials },
-        "path": s.path,
-        "modified": s.modified,
-        "textureSets": texture_sets(s),
-        "bakeMeshes": crate::bake::meshes_json(s),
-        "activeTextureSet": ts,
-        "selectedLayer": s.selected_layer().map(|l| l.0),
-        "target": match s.target { StackTarget::Content => json!("content"), StackTarget::Mask => json!("mask"), StackTarget::Effect(e) => json!(e.0) },
-        "layers": stack(s, ts),
-        "tool": { "tool": s.tool.tool.id(), "brush": crate::tool_cmds::brush_json(s) },
-        "view": s.view.label(),
-        "bakePreview": crate::bake_preview::preview_json(s),
-        "camera": crate::view_cmds::camera_json(s),
-        "display": s.doc.project.display,
-        "history": { "undo": s.undo_label(), "redo": s.redo_label(), "depth": s.history_labels().len() },
-        "memoryBytes": s.memory().total(),
-        "pendingTiles": s.pending_tiles(),
+        "projectOpen": session.project_open,
+        "project": session.doc.project.name,
+        "mesh": { "source": session.doc.project.mesh, "triangles": session.mesh.triangle_count(), "vertices": session.mesh.vertex_count(), "materials": session.mesh.materials },
+        "path": session.path,
+        "modified": session.modified,
+        "textureSets": texture_sets(session),
+        "bakeMeshes": crate::bake::meshes_json(session),
+        "activeTextureSet": texture_set,
+        "selectedLayer": session.selected_layer().map(|layer| layer.0),
+        "selectedLayers": crate::layer_selection::ids_json(&session.selected_layers()),
+        "target": match session.target { StackTarget::Content => json!("content"), StackTarget::Mask => json!("mask"), StackTarget::Effect(effect) => json!(effect.0) },
+        "layers": stack(session, texture_set),
+        "tool": { "tool": session.tool.tool.id(), "brush": crate::tool_cmds::brush_json(session) },
+        "view": session.view.label(),
+        "solo": session.solo.map(|solo| json!({ "layer": solo.layer.0, "ignoreMask": solo.ignore_mask })),
+        "bakePreview": crate::bake_preview::preview_json(session),
+        "camera": crate::view_cmds::camera_json(session),
+        "display": session.doc.project.display,
+        "history": { "undo": session.undo_label(), "redo": session.redo_label(), "depth": session.history_labels().len() },
+        "memoryBytes": session.memory().total(),
+        "pendingTiles": session.pending_tiles(),
     })
 }

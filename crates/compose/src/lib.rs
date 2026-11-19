@@ -13,17 +13,27 @@ mod curvature_size_level;
 pub mod curvature_sizes;
 pub mod display;
 pub mod eval;
+mod fabric;
+mod fur_lock;
 mod held_fields;
 mod image_identity;
+mod organic;
 pub mod pattern;
+mod pattern_context;
+pub mod solo;
 pub mod store;
 pub mod thumb;
+mod tile_pattern;
+mod tile_random_stream;
+mod timber;
 
 pub use below::{BelowCache, StackKey};
-pub use display::{DisplayKind, tile_bytes};
+pub use display::{DisplayKind, kinds_for, tile_bytes};
 pub use eval::{
-    BLOCK, Composite, Inputs, PaintTarget, Stencil, StrokePreview, all_tiles, composite_tiles, composite_tiles_cached, covered_tiles, effect_histogram,
-    flatten_layer, mask_at, mask_image, pad_tiles, stack_reads_neighbours,
+    BLOCK, Composite, Inputs, MASK_CHANNEL, PaintTarget, Stencil, StrokePreview, all_tiles, composite_tiles, composite_tiles_cached, covered_tiles,
+    effect_histogram, flatten_layer, mask_at, mask_image, mask_texels, mask_values, pad_tiles, stack_reads_neighbours,
 };
+pub use pattern_context::PatternContext;
+pub use solo::solo_project;
 pub use store::{BakedMaps, ImageRes, ImageStore, PixelStore};
 pub use thumb::{THUMB_TEXELS, ThumbImage, ThumbTarget};

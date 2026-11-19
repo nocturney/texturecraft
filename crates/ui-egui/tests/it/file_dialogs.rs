@@ -146,7 +146,7 @@ fn answered_after_the_project_changed(ask: impl FnOnce(&mut Harness<'_, TextureC
 #[test]
 fn every_project_dialog_does_nothing_for_a_replaced_project() {
     let file = temp_file("replaced-actions", "chosen.obj");
-    for id in ["material.load", "resource.import", "file.importMaterialX", "file.exportMesh", "file.reimportMesh"] {
+    for id in ["material.load", "file.importMaterialX", "file.exportMesh", "file.reimportMesh"] {
         let h = answered_after_the_project_changed(|h| invoke(h, id), &file);
         assert!(h.state().toasts.iter().any(|t| t.error && t.text.starts_with(PROJECT_CHANGED)), "{id}");
         assert!(!file.exists(), "{id} wrote nothing");

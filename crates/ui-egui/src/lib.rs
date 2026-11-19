@@ -7,11 +7,12 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod angle_dial;
+mod ask;
 mod bake_job;
 pub mod bake_mode;
 mod bake_scene;
-#[cfg(not(target_arch = "wasm32"))]
-mod brush_preset_save;
+mod color_management;
 mod color_selection_editor;
 pub mod control;
 mod decal_drop;
@@ -20,37 +21,61 @@ pub mod docking;
 pub mod export_templates;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod file_dialogs;
+mod fill_source_slot;
+mod fill_source_target;
 mod filter_slot;
 pub mod fonts;
 mod generator_panel;
 pub mod gpu;
+mod gray_slider;
 mod grid_tile;
 pub mod i18n;
 pub mod id_color_pick;
+#[cfg(not(target_arch = "wasm32"))]
+mod import_resources;
+mod inactive_set_hint;
 pub mod keymap;
 pub mod layer_panel;
+mod layout_dialog;
 mod levels_editor;
 mod levels_handle;
 mod levels_properties;
+mod line_snap;
+mod list_action;
 mod mask_preview_image;
 mod material_preview_image;
 pub mod menus;
+mod name_error;
+mod named_layout;
+pub mod named_layouts;
+mod nav_button;
+pub mod nav_buttons;
+mod nav_view;
 pub mod new_project_advanced;
 mod orb_shape;
 pub mod parity;
 mod path_hit;
 mod path_surface_cache;
+mod pattern_panel;
+mod pattern_target;
+pub mod pbr_import;
 mod preview_image;
 mod preview_request;
 mod preview_worker;
 pub mod profile;
 #[cfg(not(target_arch = "wasm32"))]
 mod project_config;
+pub mod project_form;
 pub mod properties_popup;
 mod rail_popup;
 pub mod render_mode;
+mod resource_panel;
 mod resource_picker;
+mod resource_picker_anchor;
+mod resource_picker_choice;
 mod resource_picker_item;
+mod resource_picker_tab;
+mod resource_picker_tile;
 mod running_bake;
 pub mod saved_search;
 mod screen_color_pick;
@@ -62,11 +87,15 @@ pub mod shelf_preview;
 mod shelf_tabs;
 mod shelf_toolbar;
 pub mod shelf_view;
+#[cfg(not(target_arch = "wasm32"))]
+mod smart_mask_menu;
 mod soft_box;
 pub mod state;
+mod surface_paint_point;
 pub mod symmetry;
 pub mod theme;
 pub mod thumbs;
+mod tile_edits;
 pub mod titlebar;
 pub mod toolbar;
 pub mod ui_state_store;
@@ -105,12 +134,27 @@ pub struct ResizeJob {
     pub rx: std::sync::mpsc::Receiver<texturecraft_engine::Result<texturecraft_engine::ResizeOutput>>,
 }
 
+mod link_bake_input;
+#[cfg(not(target_arch = "wasm32"))]
+mod link_import;
+
 /// A MaterialCraft material re-cooking on a worker thread (one per layer at a time).
 pub struct LinkCook {
     pub layer: texturecraft_engine::core::LayerId,
+    project: u64,
+    mesh: u64,
+    size: u32,
+    baked_inputs: Vec<link_bake_input::LinkBakeInput>,
+    canceled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The parameter values it cooks: a result whose values are no longer the layer's is redone.
     pub values: serde_json::Map<String, Value>,
-    pub rx: std::sync::mpsc::Receiver<texturecraft_engine::Result<Vec<u8>>>,
+    pub rx: std::sync::mpsc::Receiver<texturecraft_engine::Result<texturecraft_engine::link_cmds::CookedMaterial>>,
+}
+
+impl Drop for LinkCook {
+    fn drop(&mut self) {
+        self.canceled.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// The engine's refusal to paint while a bake shows (translated where it is toasted).
@@ -131,6 +175,8 @@ pub struct TextureCraftApp {
     pub session: Session,
     /// A smooth move to a saved camera in progress.
     camera_glide: Option<CameraGlide>,
+    /// Yaw and pitch an Alt+Shift drag has reached before snapping to 90° steps (see `viewport`).
+    orbit_snap: Option<(f32, f32)>,
     pub ui: UiState,
     /// Where `ui` is saved between runs
     ui_store: ui_state_store::UiStateStore,
@@ -140,8 +186,12 @@ pub struct TextureCraftApp {
     /// Texture sets the GPU could not hold, and the text of the one sticky toast naming them.
     pub(crate) gpu_memory: (Vec<String>, Option<String>),
     pub bake: Option<BakeJob>,
+    /// The Import PBR textures dialog while it is open.
+    pub pbr_import: Option<pbr_import::PbrDialog>,
     pub resize: Option<ResizeJob>,
     pub link_cooks: Vec<LinkCook>,
+    #[cfg(not(target_arch = "wasm32"))]
+    link_imports: Vec<link_import::LinkImport>,
     pub thumbs: thumbs::Thumbs,
     /// The Layers panel's thumbnails and folded groups.
     pub layer_panel: layer_panel::LayerPanel,
@@ -150,16 +200,14 @@ pub struct TextureCraftApp {
     pub fps: f32,
     /// User smart materials found in the library folder (refreshed on demand).
     pub library: Option<Vec<std::path::PathBuf>>,
-    /// User brush presets found in the brushes folder (refreshed on demand).
-    pub brushes: Option<Vec<std::path::PathBuf>>,
     /// Rendering mode's path tracer.
     pub render: render_mode::RenderView,
     /// Smoothed CPU time spent building the UI per frame (ms).
     pub ui_ms: f32,
     /// Frame timing and the scripted paint test (`debug.*` control methods).
     pub profiler: profile::Profiler,
-    /// Where the last 3D stroke ended (viewport pixels), for Shift+click straight lines.
-    pub last_paint_point: Option<texturecraft_engine::geom::glam::Vec2>,
+    /// Where the last 3D stroke ended on the model, scoped to its mesh and texture set, for Shift+click straight lines.
+    pub last_paint_point: Option<uv_paint_point::SurfacePaintPoint>,
     /// The last finished 2D stroke's endpoint, scoped to its mesh and texture set for Shift+click lines
     pub last_paint_uv: Option<uv_paint_point::UvPaintPoint>,
     /// The decal layer the next click in the 3D view places.
@@ -168,6 +216,8 @@ pub struct TextureCraftApp {
     pub properties_popup: Option<properties_popup::PropertiesPopup>,
     /// The color selection the next click in the 3D or 2D view picks an ID color for
     pub picking_id_color: Option<id_color_pick::IdColorPick>,
+    /// Whether the next click on the model places the symmetry planes (Pick point in the symmetry settings)
+    pub picking_symmetry_plane: bool,
     /// The wgpu state (screenshots read the renderer's targets).
     pub render_state: Option<eframe::egui_wgpu::RenderState>,
     /// CJK fallback fonts for the UI language.
@@ -200,9 +250,24 @@ pub struct TextureCraftApp {
     pub(crate) bindings: keymap::Bindings,
 }
 
+/// The UI state to start with: the saved one, whose tool settings go to `session`, else the defaults in the OS language
+pub(crate) fn start_ui(saved: Option<UiState>, session: &mut Session) -> UiState {
+    match saved {
+        Some(ui) => {
+            ui.tool_settings.apply(&mut session.tool);
+            ui
+        }
+        None => {
+            let mut ui = UiState::default();
+            ui.prefs.language = i18n::os_language().into();
+            ui
+        }
+    }
+}
+
 impl TextureCraftApp {
     /// The app around `session`, with the saved UI state (or defaults in the OS language) and the GPU viewport.
-    pub fn new(cc: &eframe::CreationContext<'_>, session: Session) -> TextureCraftApp {
+    pub fn new(cc: &eframe::CreationContext<'_>, mut session: Session) -> TextureCraftApp {
         theme::install(&cc.egui_ctx);
 
         // Bakes cast their rays on a GPU device of their own (created on the first bake)
@@ -212,16 +277,19 @@ impl TextureCraftApp {
 
         // The first run speaks the OS (or browser) language
         let mut ui_store = ui_state_store::UiStateStore::new(ui_state_store::FILE.get().cloned());
-        let ui = ui_store.load(cc.storage).unwrap_or_else(|| {
-            let mut ui = UiState::default();
-            ui.prefs.language = i18n::os_language().into();
-            ui
-        });
+        let mut ui = start_ui(ui_store.load(cc.storage), &mut session);
+
+        // No window opens by itself with no project (a saved layout may have left Export open)
+        if !session.project_open {
+            ui.windows.export = false;
+        }
+
         let next_autosave = ui.prefs.autosave_minutes as f64 * 60.0;
         ui.prefs.apply_resource_limits();
 
         let mut app = TextureCraftApp {
             camera_glide: None,
+            orbit_snap: None,
             session,
             ui,
             ui_store,
@@ -230,8 +298,11 @@ impl TextureCraftApp {
             toasts: Vec::new(),
             gpu_memory: (Vec::new(), None),
             bake: None,
+            pbr_import: None,
             resize: None,
             link_cooks: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            link_imports: Vec::new(),
             thumbs: thumbs::Thumbs::default(),
             layer_panel: layer_panel::LayerPanel::default(),
             viewport_rect: egui::Rect::NOTHING,
@@ -239,13 +310,13 @@ impl TextureCraftApp {
             ui_ms: 0.0,
             profiler: profile::Profiler::default(),
             library: None,
-            brushes: None,
             render: render_mode::RenderView::default(),
             last_paint_point: None,
             last_paint_uv: None,
             placing_decal: None,
             properties_popup: None,
             picking_id_color: None,
+            picking_symmetry_plane: false,
             render_state: cc.wgpu_render_state.clone(),
             fonts: fonts::UiFonts::default(),
             banner: None,
@@ -282,6 +353,11 @@ impl TextureCraftApp {
 
             let skipped = app.session.load_templates(user_dir("templates"));
             app.session.log.extend(skipped.into_iter().map(|warning| format!("Project template skipped: {warning}")));
+
+            // Load presets before control commands can access the session
+            for warning in app.session.load_brush_presets(user_dir("brushes")) {
+                app.toast(warning, true);
+            }
         }
 
         app
@@ -290,21 +366,73 @@ impl TextureCraftApp {
     /// Run an engine command, reporting errors as toasts. Returns the result on success.
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
         self.ui.prefs.apply_resource_limits();
+        #[cfg(not(target_arch = "wasm32"))]
+        if id == "material.load"
+            && self.session.project_open
+            && let Some(path) = params.get("path").and_then(Value::as_str)
+            && texturecraft_engine::link_cmds::is_link_file(std::path::Path::new(path))
+        {
+            return self.start_link_import(path, &params);
+        }
 
-        // Going to a saved camera glides there; the control channel and CLI jump straight away
-        let glide_from = (id.starts_with("camera.select") || id.starts_with("camera.bookmark")).then_some(self.session.camera);
+        // Going to a saved camera or a fixed view glides there; the control channel and CLI jump straight away
+        let glides = id.starts_with("camera.select") || id.starts_with("camera.bookmark") || id.starts_with("camera.view");
+        let before = self.session.camera;
+        let glide_from = glides.then_some(before);
         match texturecraft_engine::execute(&mut self.session, id, &params) {
-            Ok(v) => {
-                if let Some(from) = glide_from.filter(|f| *f != self.session.camera) {
-                    self.camera_glide = Some(CameraGlide { from, to: self.session.camera, start: self.last_time });
-                    self.session.camera = from;
+            Ok(value) => {
+                if matches!(id, "brush.preset.store" | "brush.preset.rename" | "brush.preset.delete") {
+                    self.thumbs.forget_saved_files();
                 }
-                Some(v)
+
+                // Pending work and thumbnail snapshots belong to the old project
+                if matches!(id, "file.open" | "file.new" | "file.close" | "project.new" | "project.sample") {
+                    self.pbr_import = None;
+                    self.resize = None;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.link_imports.clear();
+                    self.link_cooks.clear();
+                    self.layer_panel = Default::default();
+                }
+
+                // The empty state has no baking or rendering to show
+                if id == "file.close" {
+                    self.ui.mode = state::Mode::Painting;
+                    self.ui.windows.export = false;
+                }
+
+                match glide_from {
+                    Some(from) if from != self.session.camera => {
+                        self.camera_glide = Some(CameraGlide { from, to: self.session.camera, start: self.last_time });
+                        self.session.camera = from;
+                    }
+
+                    // Already at the destination: drop a glide an earlier command in the same frame started
+                    Some(_) => self.camera_glide = None,
+                    None => self.settle_camera_glide(id, before),
+                }
+
+                Some(value)
             }
-            Err(e) => {
-                self.toast(e.to_string(), true);
+            Err(error) => {
+                self.toast(error.to_string(), true);
                 None
             }
+        }
+    }
+
+    /// After command `id` ran without starting a glide (the camera was `before`): a projection switch
+    /// carries over into a running glide, which would otherwise put back the projection it recorded;
+    /// any other command that moved the camera, or named where it should be, ends the glide, which
+    /// would put the camera back or carry it on to the glide's old destination.
+    pub(crate) fn settle_camera_glide(&mut self, id: &str, before: texturecraft_engine::geom::OrbitCamera) {
+        if matches!(id, "camera.perspective" | "camera.orthographic") {
+            if let Some(glide) = &mut self.camera_glide {
+                glide.from.ortho = self.session.camera.ortho;
+                glide.to.ortho = self.session.camera.ortho;
+            }
+        } else if self.session.camera != before || sets_camera(id) {
+            self.camera_glide = None;
         }
     }
 
@@ -350,11 +478,37 @@ impl TextureCraftApp {
         if self.link_cooks.iter().any(|c| c.layer == layer) {
             return;
         }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if !self.link_imports.is_empty() || !self.link_cooks.is_empty() {
+            self.toast("Another MaterialCraft cook is still running", true);
+            return;
+        }
+
+        self.ui.prefs.apply_resource_limits();
         match self.session.link_job(layer, &serde_json::Map::new()) {
             Ok(job) => {
+                let baked = self.session.doc.project.locate(layer).and_then(|(set, _, _)| self.session.baked(set));
+                let baked_inputs = job
+                    .input_identifiers
+                    .iter()
+                    .filter_map(|identifier| texturecraft_engine::core::BakedMap::parse(identifier))
+                    .map(|map| link_bake_input::LinkBakeInput::capture(map, baked))
+                    .collect();
                 let values = job.values.clone();
+                let size = job.size;
+                let canceled = std::sync::Arc::clone(&job.canceled);
                 let rx = spawn_worker("texturecraft-link", move || job.run());
-                self.link_cooks.push(LinkCook { layer, values, rx });
+                self.link_cooks.push(LinkCook {
+                    layer,
+                    project: self.session.project_id,
+                    mesh: self.session.mesh_id,
+                    size,
+                    baked_inputs,
+                    canceled,
+                    values,
+                    rx,
+                });
             }
             Err(e) => self.toast(e.to_string(), true),
         }
@@ -364,27 +518,45 @@ impl TextureCraftApp {
         if self.link_cooks.is_empty() {
             return;
         }
+
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        if self.session.stroke_active() {
+            return;
+        }
+
+        self.link_cooks.retain(|cook| {
+            cook.project == self.session.project_id && cook.mesh == self.session.mesh_id && self.session.doc.project.locate(cook.layer).is_some()
+        });
         let mut done = Vec::new();
         self.link_cooks.retain(|c| match c.rx.try_recv() {
             Err(std::sync::mpsc::TryRecvError::Empty) => true,
-            Ok(r) => {
-                done.push((c.layer, c.values.clone(), r));
+            Ok(result) => {
+                let Some((set, _, _)) = self.session.doc.project.locate(c.layer) else {
+                    return false;
+                };
+
+                let resized = self.session.doc.project.texture_set(set).is_ok_and(|set| set.resolution != c.size);
+                let baked = self.session.baked(set);
+                let stale = resized || c.baked_inputs.iter().any(|input| !input.is_current(baked));
+                done.push((c.layer, c.values.clone(), stale, result));
                 false
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                done.push((c.layer, c.values.clone(), Err(texturecraft_engine::EngineError::Other("the MaterialCraft cook stopped".into()))));
+                done.push((c.layer, c.values.clone(), false, Err(texturecraft_engine::EngineError::Other("the MaterialCraft cook stopped".into()))));
                 false
             }
         });
-        for (layer, values, result) in done {
+        for (layer, values, stale, result) in done {
             let current = self.session.link_values(layer);
             match (result, current) {
-                // The layer is gone (undone, deleted): nothing to show.
+                // The layer can disappear while a cook is pending
                 (_, Err(_)) => {}
-                (Ok(_), Ok(now)) if now != values => self.cook_link(layer),
-                (Ok(bytes), Ok(_)) => {
-                    if let Err(e) = self.session.apply_link_cook(layer, &bytes, true) {
+                (result, Ok(now)) if now != values || stale => {
+                    drop(result);
+                    self.cook_link(layer);
+                }
+                (Ok(material), Ok(_)) => {
+                    if let Err(e) = self.session.apply_link_cook(layer, &material, true) {
                         self.toast(e.to_string(), true);
                     }
                 }
@@ -505,6 +677,7 @@ impl TextureCraftApp {
         if self.resize.is_some() {
             return;
         }
+
         match self.session.resize_task(ts, resolution) {
             Ok(task) => {
                 let progress = Arc::new(Progress::new());
@@ -518,10 +691,18 @@ impl TextureCraftApp {
     /// Apply a finished resize (after any stroke in progress ends).
     fn poll_resize(&mut self, ctx: &egui::Context) {
         let Some(job) = &self.resize else { return };
+
+        // Nothing to resize without a project (a result that arrives after Close is dropped)
+        if !self.session.project_open {
+            self.resize = None;
+            return;
+        }
+
         ctx.request_repaint_after(std::time::Duration::from_millis(30));
         if self.session.stroke_active() {
             return;
         }
+
         let result = match job.rx.try_recv() {
             Ok(r) => r,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
@@ -593,14 +774,21 @@ impl TextureCraftApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn autosave(&mut self, now: f64) {
         let period = self.ui.prefs.autosave_minutes as f64 * 60.0;
-        // The clock starts at the first unsaved change.
+
+        // The clock starts at the first unsaved change
         if period <= 0.0 || !self.session.modified {
             self.next_autosave = now + period;
             return;
         }
+
         if now < self.next_autosave {
             return;
         }
+
+        let Some(mut reservation) = texturecraft_engine::formats::RamReservation::try_for_save() else {
+            return;
+        };
+
         self.next_autosave = now + period;
         let dir = user_dir("autosave");
         let path = dir.join(format!(
@@ -608,11 +796,13 @@ impl TextureCraftApp {
             texturecraft_engine::formats::export::sanitize_file_stem(&self.session.doc.project.name),
             texturecraft_engine::core::PROJECT_EXT
         ));
-        let pf = self.session.project_file();
+        let snapshot = self.session.project_snapshot();
         let spawned = std::thread::Builder::new().name("texturecraft-autosave".into()).spawn(move || {
-            let result = std::fs::create_dir_all(&dir)
-                .map_err(|e| e.to_string())
-                .and_then(|_| texturecraft_engine::formats::save_project(&path, &pf).map_err(|e| e.to_string()));
+            let result =
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|_| reservation.save(&path, &snapshot).map_err(|error| error.to_string()));
+            drop(snapshot);
+            drop(reservation);
+
             match result {
                 Ok(()) => log::info!("autosaved {}", path.display()),
                 Err(e) => log::warn!("autosave to {} failed: {e}", path.display()),
@@ -622,6 +812,13 @@ impl TextureCraftApp {
             log::warn!("could not start autosave: {e}");
         }
     }
+}
+
+/// Whether command `id` puts the camera at a place it names (a view, a saved camera, explicit values or
+/// framing), so a glide toward an earlier destination must not go on even when the camera is already there
+fn sets_camera(id: &str) -> bool {
+    matches!(id, "camera.set" | "camera.orbit" | "camera.select")
+        || ["camera.view.", "camera.bookmark", "viewport.frame"].iter().any(|prefix| id.starts_with(prefix))
 }
 
 /// A smooth move of the viewport camera (see [`TextureCraftApp::run`]).
@@ -647,7 +844,8 @@ impl TextureCraftApp {
         c.pitch = mix(a.pitch, b.pitch);
         c.distance = mix(a.distance, b.distance);
         c.fov = mix(a.fov, b.fov);
-        // Orthographic switches at the end (the projections cannot be blended).
+
+        // Switch orthographic mode at the end because projections cannot blend
         c.ortho = if t >= 1.0 { b.ortho } else { a.ortho };
         self.session.camera = c;
         self.session.revision = self.session.revision.wrapping_add(1);
@@ -665,6 +863,7 @@ impl eframe::App for TextureCraftApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.ui.tool_settings = texturecraft_engine::ToolSettings::of(&self.session.tool);
         self.ui_store.save(&self.ui, storage);
         self.report_ui_storage_warning();
         export_templates::save_library(self, storage);
@@ -690,13 +889,29 @@ impl eframe::App for TextureCraftApp {
         self.run_file_dialog_answers();
         web_files::poll(self);
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
-        for f in &dropped {
-            web_files::dropped(self, ctx, f);
+
+        // A folder, a zip or several PBR maps dropped together open the PBR import dialog
+        #[cfg(not(target_arch = "wasm32"))]
+        let consumed = if !dropped.is_empty() {
+            let paths: Vec<std::path::PathBuf> = dropped.iter().map(|f| f.path().to_path_buf()).collect();
+            pbr_import::dropped(self, &paths)
+        } else {
+            Vec::new()
+        };
+        #[cfg(target_arch = "wasm32")]
+        let consumed: Vec<usize> = Vec::new();
+        for (index, file) in dropped.iter().enumerate() {
+            if consumed.binary_search(&index).is_err() {
+                web_files::dropped(self, ctx, file);
+            }
         }
         self.poll_bake(ctx);
         self.poll_resize(ctx);
         self.poll_link_cooks(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.poll_link_imports(ctx);
         self.thumbs.sync_images(&self.session.images, self.session.revision);
+
         // The library shelf rescans when the window comes back (MaterialCraft may have sent a material)
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
         if focused && !self.focused {
@@ -720,6 +935,7 @@ impl eframe::App for TextureCraftApp {
         updates_ui::tick(self, ctx);
         self.bindings.sync(&self.ui.keymap, craft_keymap::egui::platform(ctx));
         menus::shortcuts(self, ctx);
+
         // The Path tool's curve repaints (a preview while placed) as its points, brush or material change
         if let Err(e) = self.session.path_live() {
             self.session.cancel_path();
@@ -728,14 +944,21 @@ impl eframe::App for TextureCraftApp {
         profile::drive(self, ctx);
         self.toasts.retain(|t| t.until > now);
         self.profiler.logic_ms = (now_ms() - t0) as f32;
-        // Last, so it sees every close request this frame's work made.
+
+        // Last, so it sees every close request this frame's work made
         windows::close_request(self, ctx);
     }
 
     #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        let t0 = now_ms();
+        let started_ms = now_ms();
+
+        // Baking and rendering need a project (a saved layout may start in one of them)
+        if !self.session.project_open {
+            self.ui.mode = state::Mode::Painting;
+        }
+
         if !self.ui.hide_ui {
             titlebar::show(self, ui);
             banner(self, ui);
@@ -746,21 +969,28 @@ impl eframe::App for TextureCraftApp {
                 toolbar::rail(self, ui);
             }
         }
-        let hide = self.ui.hide_ui;
-        let tk = theme::Tokens::get(&ctx);
+
+        let hide_ui = self.ui.hide_ui;
+        let tokens = theme::Tokens::get(&ctx);
+
         // The dock keeps the cards' gutter from the bars and rails around it
-        let panel_frame = if hide { egui::Frame::NONE.fill(tk.viewport) } else { egui::Frame::NONE.fill(tk.chrome).inner_margin(theme::GUTTER) };
-        egui::CentralPanel::default().frame(panel_frame).show(ui, |ui| if hide { viewport::central(self, ui) } else { docking::show(self, ui) });
+        let panel_frame = if hide_ui { egui::Frame::NONE.fill(tokens.viewport) } else { egui::Frame::NONE.fill(tokens.chrome).inner_margin(theme::GUTTER) };
+        egui::CentralPanel::default().frame(panel_frame).show(ui, |ui| if hide_ui { viewport::central(self, ui) } else { docking::show(self, ui) });
         windows::show(self, &ctx);
+
+        // Finish after the dock and windows have requested their thumbnails
+        self.layer_panel.end(&ctx, &self.session);
+
         #[cfg(not(target_arch = "wasm32"))]
         updates_ui::show(self, &ctx);
         toasts(self, &ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.file_dialogs.show_pending(frame);
-        let end = now_ms();
-        let dt = (end - t0) as f32;
-        self.ui_ms = if self.ui_ms == 0.0 { dt } else { self.ui_ms * 0.9 + dt * 0.1 };
-        self.profiler.end_frame(end, dt);
+
+        let ended_ms = now_ms();
+        let elapsed_ms = (ended_ms - started_ms) as f32;
+        self.ui_ms = if self.ui_ms == 0.0 { elapsed_ms } else { self.ui_ms * 0.9 + elapsed_ms * 0.1 };
+        self.profiler.end_frame(ended_ms, elapsed_ms);
     }
 }
 

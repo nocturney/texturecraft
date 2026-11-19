@@ -4,32 +4,74 @@ use egui::{Color32, RichText, Ui, vec2};
 use egui_phosphor::regular as ic;
 use serde_json::json;
 use texturecraft_engine::core::ToneMapping;
-use texturecraft_engine::core::project::ENV_RESOURCE_PREFIX;
-use texturecraft_engine::geom::primitives::BUILTINS;
+use texturecraft_engine::core::project::{DisplaySettings, ENV_RESOURCE_PREFIX};
 use texturecraft_render::ibl::ENVIRONMENTS;
 
 use crate::TextureCraftApp;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::file_dialogs::{Bound, FileDialog};
 use crate::i18n::LANGUAGES;
-use crate::i18n::{tr, trf};
-use crate::new_project_advanced::COMBO_WIDTH;
+use crate::i18n::{tr, tr_history, trf};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::state::Mode;
 use crate::theme::{Accent, Brightness, Tokens, caption};
-use crate::widgets::{color_swatch, combo, icon_button, primary_button, section, slider};
+use crate::widgets::{color_swatch, combo, icon_button, primary_button, section, section_with_reset, slider};
 
 pub fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
-    start(app, ctx);
-    new_project(app, ctx);
+    crate::new_project_advanced::show(app, ctx);
     about(app, ctx);
     settings(app, ctx);
     #[cfg(not(target_arch = "wasm32"))]
-    crate::project_config::show(app, ctx);
+    {
+        crate::project_config::show(app, ctx);
+        crate::import_resources::show(app, ctx);
+    }
     crate::keymap::window(app, ctx);
     crate::windows::export(app, ctx);
     #[cfg(target_arch = "wasm32")]
     export_mesh(app, ctx);
+    crate::pbr_import::window(app, ctx);
     unsaved(app, ctx);
+    reset_ui(app, ctx);
+    crate::named_layouts::show(app, ctx);
+}
+
+/// Window ▸ Reset UI asks first: Escape closes the question, Enter answers Reset.
+pub(crate) fn reset_ui_keys(app: &mut TextureCraftApp, input: &mut egui::InputState, nothing_focused: bool) {
+    if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+        app.ui.windows.confirm_reset_ui = false;
+    } else if nothing_focused && input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+        app.ui.adopt_layout(crate::UiState::default());
+        app.ui.windows.confirm_reset_ui = false;
+    }
+}
+
+fn reset_ui(app: &mut TextureCraftApp, ctx: &egui::Context) {
+    if !app.ui.windows.confirm_reset_ui {
+        return;
+    }
+
+    let mut open = true;
+    let (mut reset, mut cancel) = (false, false);
+    dialog("reset_ui", tr("Reset UI"), &mut open).show(ctx, |ui| {
+        ui.label(tr("Reset the panels, view layout, zoom and every other view setting to their defaults? Settings and shortcuts stay. To reset only the panels, use Reset panel layout."));
+        ui.add_space(8.0);
+
+        // One row keeps the window to its contents; a bare right-to-left layout fills the screen height
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                reset = ui.add(primary_button(ui, tr("Reset"))).clicked();
+                cancel = ui.button(tr("Cancel")).clicked();
+            });
+        });
+    });
+
+    if reset {
+        app.ui.adopt_layout(crate::UiState::default());
+    }
+    if reset || cancel || !open {
+        app.ui.windows.confirm_reset_ui = false;
+    }
 }
 
 /// Hold `then` (quitting, opening or closing a project) behind the unsaved-changes dialog when
@@ -114,6 +156,7 @@ fn unsaved(app: &mut TextureCraftApp, ctx: &egui::Context) {
         }
     }
 
+    let discard_after_create = matches!(pending, Unsaved::CreateProject(_)) && save_first == Some(false) && app.session.modified;
     match save_first {
         Some(true) => {
             // An untitled project is saved from a dialog that answers on a later frame
@@ -133,10 +176,16 @@ fn unsaved(app: &mut TextureCraftApp, ctx: &egui::Context) {
     if app.session.modified {
         return;
     }
+
     app.ui.windows.unsaved = None;
     match pending {
         Unsaved::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         Unsaved::Command(id) => crate::menus::invoke(app, ctx, &id),
+        Unsaved::CreateProject(opening_id) => {
+            if !crate::new_project_advanced::finish_create(app, opening_id) && discard_after_create {
+                app.session.modified = true;
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
         Unsaved::Open(path) => open_path(app, &path),
         Unsaved::Load(name, bytes) => crate::web_files::load(app, &name, std::sync::Arc::unwrap_or_clone(bytes)),
@@ -221,6 +270,22 @@ pub(crate) fn display(app: &mut TextureCraftApp, ui: &mut Ui) {
             crate::viewport::set_focus_picking(ui.ctx(), !picking);
         }
     });
+    ui.add_space(6.0);
+
+    // The switch gates all four amounts (the engine has one switch for the group); each amount 0 leaves that effect out
+    let post_effect_fields = |d: &DisplaySettings| (d.post_effects, d.bloom, d.vignette, d.sharpen, d.grain);
+    let post_effect_defaults = post_effect_fields(&DisplaySettings::default());
+    if section_with_reset(ui, "sec_post_effects", tr("Post effects"), false, post_effect_fields(&d) == post_effect_defaults, |ui| {
+        ui.checkbox(&mut d.post_effects, tr("Post effects (viewport and Rendering mode)"));
+        ui.add_enabled_ui(d.post_effects, |ui| {
+            slider(ui, tr("Glow"), &mut d.bloom, 0.0..=1.0, 2).on_hover_text(tr("Bright areas bleed light into their surroundings"));
+            slider(ui, tr("Vignette"), &mut d.vignette, 0.0..=1.0, 2).on_hover_text(tr("Darkens the corners of the view"));
+            slider(ui, tr("Sharpen"), &mut d.sharpen, 0.0..=1.0, 2).on_hover_text(tr("Brings out fine detail"));
+            slider(ui, tr("Film grain"), &mut d.grain, 0.0..=1.0, 2).on_hover_text(tr("Adds fine noise over the view"));
+        });
+    }) {
+        (d.post_effects, d.bloom, d.vignette, d.sharpen, d.grain) = post_effect_defaults;
+    }
     ui.add_space(6.0);
     ui.label(caption(tr("Viewer settings")));
     ui.checkbox(&mut app.ui.wireframe_3d, tr("Show wireframe in the 3D view"));
@@ -345,6 +410,7 @@ pub(crate) fn shader(app: &mut TextureCraftApp, ui: &mut Ui) {
 pub(crate) fn history(app: &mut TextureCraftApp, ui: &mut Ui) {
     let tokens = Tokens::get(ui.ctx());
     let (done, undone) = (app.session.history_labels(), app.session.redo_labels());
+
     // A click on a step goes back (or forward) to it: steps to undo, or to redo when negative
     let mut jump = 0i64;
 
@@ -363,8 +429,8 @@ pub(crate) fn history(app: &mut TextureCraftApp, ui: &mut Ui) {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 let done_count = done.len() as i64;
                 let rows = std::iter::once(RichText::new(tr("Project opened")).color(tokens.text_dim))
-                    .chain(done.iter().map(RichText::new))
-                    .chain(undone.iter().map(|label| RichText::new(trf("{action} (undone)", &[("action", label)])).color(tokens.text_dim)));
+                    .chain(done.iter().map(|label| RichText::new(tr_history(label))))
+                    .chain(undone.iter().map(|label| RichText::new(trf("{action} (undone)", &[("action", &tr_history(label))])).color(tokens.text_dim)));
                 for (row, text) in rows.enumerate() {
                     // Each row is the state after that many steps
                     let steps = done_count - row as i64;
@@ -385,196 +451,6 @@ pub(crate) fn history(app: &mut TextureCraftApp, ui: &mut Ui) {
         app.run("edit.undo", json!({ "steps": jump }));
     } else if jump < 0 {
         app.run("edit.redo", json!({ "steps": -jump }));
-    }
-}
-
-/// What the start window was asked for.
-enum Start {
-    Menu(&'static str),
-    #[cfg(not(target_arch = "wasm32"))]
-    Recent(String),
-    Close,
-}
-
-/// The start window: a new project, a project file or a recent one, or the sample that is open.
-fn start(app: &mut TextureCraftApp, ctx: &egui::Context) {
-    if !app.ui.windows.start {
-        return;
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    let tokens = Tokens::get(ctx);
-    let mut open = true;
-    let mut action = None;
-    dialog("start", "TextureCraft", &mut open).min_width(380.0).show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            if ui.add(primary_button(ui, tr("New project..."))).clicked() {
-                action = Some(Start::Menu("ui.newProject"));
-            }
-            if ui.button(tr("Open...")).clicked() {
-                action = Some(Start::Menu("file.open"));
-            }
-        });
-        #[cfg(not(target_arch = "wasm32"))]
-        if file_dialogs_available() {
-            ui.add_space(8.0);
-            ui.label(caption(tr("Recent projects")));
-            if app.ui.recent.is_empty() {
-                ui.label(RichText::new(tr("No recent projects yet")).color(tokens.text_dim));
-            }
-            for path in &app.ui.recent {
-                let name = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path);
-                if ui
-                    .add(egui::Button::selectable(false, format!("{}  {name}", ic::FILE)).min_size(vec2(ui.available_width(), 0.0)))
-                    .on_hover_text(path)
-                    .clicked()
-                {
-                    action = Some(Start::Recent(path.clone()));
-                }
-            }
-        }
-        ui.add_space(8.0);
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut app.ui.prefs.start_window, tr("Show at startup"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(tr("Continue with the sample project")).clicked() {
-                    action = Some(Start::Close);
-                }
-            });
-        });
-    });
-
-    if let Some(action) = action {
-        app.ui.windows.start = false;
-        match action {
-            Start::Menu(id) => crate::menus::invoke(app, ctx, id),
-            #[cfg(not(target_arch = "wasm32"))]
-            Start::Recent(path) => open_path(app, &path),
-            Start::Close => {}
-        }
-    }
-
-    if !open {
-        app.ui.windows.start = false;
-    }
-}
-
-fn new_project(app: &mut TextureCraftApp, ctx: &egui::Context) {
-    if !app.ui.windows.new_project {
-        return;
-    }
-
-    let mut open = true;
-    let mut create = false;
-    dialog("new_project", tr("New project"), &mut open).show(ctx, |ui| {
-        ui.label(caption(tr("Basic settings")));
-        egui::Grid::new("np").num_columns(2).spacing(vec2(12.0, 8.0)).min_col_width(crate::new_project_advanced::form_label_width(ui)).show(ui, |ui| {
-            ui.label(tr("3D mesh"));
-            ui.horizontal(|ui| {
-                let label = app.ui.new_project.file.clone().unwrap_or_else(|| {
-                    BUILTINS
-                        .iter()
-                        .find(|(id, _)| *id == app.ui.new_project.mesh)
-                        .map(|(_, builtin_label)| trf("Built-in: {mesh}", &[("mesh", &tr(builtin_label))]))
-                        .unwrap_or_default()
-                });
-                egui::ComboBox::from_id_salt("np_mesh").width(COMBO_WIDTH).selected_text(label).show_ui(ui, |ui| {
-                    for (id, builtin_label) in BUILTINS {
-                        if ui
-                            .selectable_label(
-                                app.ui.new_project.mesh == id && app.ui.new_project.file.is_none(),
-                                trf("Built-in: {mesh}", &[("mesh", &tr(builtin_label))]),
-                            )
-                            .clicked()
-                        {
-                            app.ui.new_project.mesh = id.to_string();
-                            app.ui.new_project.file = None;
-                        }
-                    }
-                });
-                if file_dialogs_available() && ui.button(tr("Select...")).clicked() {
-                    ask_mesh_file(app);
-                }
-            });
-            ui.end_row();
-            ui.label(tr("Project template"));
-            let new_project = &mut app.ui.new_project;
-            egui::ComboBox::from_id_salt("np_template").width(COMBO_WIDTH).selected_text(new_project.template.clone()).show_ui(ui, |ui| {
-                let user_templates = app.session.templates.list.iter();
-                for template in texturecraft_engine::template_cmds::builtin_templates().iter().chain(user_templates) {
-                    if ui.selectable_label(template.name == new_project.template, &template.name).clicked() {
-                        new_project.template = template.name.clone();
-                        new_project.resolution = template.resolution;
-                        new_project.normal_format = None;
-                    }
-                }
-            });
-            ui.end_row();
-            ui.label("");
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut app.ui.new_project.template_name).hint_text(tr("Template name")).desired_width(120.0));
-                let name = app.ui.new_project.template_name.trim().to_string();
-                if ui.add_enabled(!name.is_empty(), egui::Button::new(tr("Save current project as template"))).clicked()
-                    && app.run("project.template.save", json!({"name": name})).is_some()
-                {
-                    app.ui.new_project.template = name;
-                    app.ui.new_project.template_name.clear();
-                }
-            });
-            ui.end_row();
-            ui.label(tr("Document resolution"));
-            egui::ComboBox::from_id_salt("np_res").selected_text(format!("{0} x {0}", app.ui.new_project.resolution)).show_ui(ui, |ui| {
-                for size in [512u32, 1024, 2048, 4096] {
-                    ui.selectable_value(&mut app.ui.new_project.resolution, size, format!("{size} x {size}"));
-                }
-            });
-            ui.end_row();
-            ui.label(tr("UV tiles (UDIM)"));
-            let tiles_label = |tiles: Option<bool>| match tiles {
-                None => tr("Automatic (from the mesh UVs)"),
-                Some(true) => tr("On"),
-                Some(false) => tr("Off"),
-            };
-            egui::ComboBox::from_id_salt("np_tiles").selected_text(tiles_label(app.ui.new_project.uv_tiles)).show_ui(ui, |ui| {
-                for tiles in [None, Some(true), Some(false)] {
-                    ui.selectable_value(&mut app.ui.new_project.uv_tiles, tiles, tiles_label(tiles));
-                }
-            });
-            ui.end_row();
-            ui.label(tr("Name"));
-            ui.text_edit_singleline(&mut app.ui.new_project.name);
-            ui.end_row();
-        });
-        ui.add_space(8.0);
-        crate::new_project_advanced::advanced_settings(app, ui);
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(primary_button(ui, tr("Create"))).clicked() {
-                    create = true;
-                }
-                if ui.button(tr("Cancel")).clicked() {
-                    app.ui.windows.new_project = false;
-                }
-            });
-        });
-    });
-    if create {
-        let new_project = app.ui.new_project.clone();
-        let (command, mesh) = match &new_project.file {
-            Some(path) => ("file.new", path.clone()),
-            None => ("project.new", new_project.mesh.clone()),
-        };
-        let params = json!({"mesh": mesh, "resolution": new_project.resolution, "name": new_project.name, "uvTiles": new_project.uv_tiles, "template": new_project.template});
-        if app.run(command, params).is_some() {
-            app.ui.windows.new_project = false;
-            app.ui.mode = Mode::Painting;
-            crate::new_project_advanced::apply_after_create(app, &new_project);
-        }
-    }
-    if !open {
-        app.ui.windows.new_project = false;
     }
 }
 
@@ -600,13 +476,15 @@ fn settings_resources(ctx: &egui::Context) -> (u32, u64) {
 fn settings(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let tk = Tokens::get(ctx);
     let mut open = app.ui.windows.settings;
-    // A language whose script no font draws is listed by its English name and disabled.
+
+    // A language whose script no font draws is listed by its English name and disabled
     let drawable = LANGUAGES.each_ref().map(|l| crate::fonts::Script::of_language(l.code).is_none_or(|s| app.fonts.covers(s)));
     #[cfg(not(target_arch = "wasm32"))]
     let mut pick_data_folder = false;
     window("settings", tr("Settings"), &mut open).default_width(360.0).show(ctx, |ui| {
         let p = &mut app.ui.prefs;
-        // Every section is a two-column form: labels on the left, controls aligned beside them.
+
+        // Every section is a two-column form: labels on the left, controls aligned beside them
         let form = |id: &str| egui::Grid::new(id).num_columns(2).spacing(vec2(12.0, 8.0)).min_col_width(120.0);
         ui.label(caption(tr("Interface")));
         form("settings_interface").show(ui, |ui| {
@@ -658,9 +536,6 @@ fn settings(app: &mut TextureCraftApp, ctx: &egui::Context) {
                     .on_hover_text(tr("Use the operating system's window frame and buttons instead of TextureCraft's own title bar"));
                 ui.end_row();
             }
-            ui.label(tr("Start window"));
-            ui.checkbox(&mut p.start_window, tr("Show at startup"));
-            ui.end_row();
         });
         ui.add_space(8.0);
         ui.label(caption(tr("Viewport")));
@@ -826,19 +701,6 @@ pub fn file_dialogs_available() -> bool {
     cfg!(not(target_arch = "wasm32"))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn ask_mesh_file(app: &mut TextureCraftApp) {
-    let dialog = FileDialog::open().filter(tr("3D meshes"), &texturecraft_engine::formats::mesh_import::MESH_EXTENSIONS);
-    app.ask_file(dialog, Bound::App, |app, paths| {
-        if let Some(p) = paths.first() {
-            app.ui.new_project.file = Some(p.display().to_string());
-        }
-    });
-}
-
-#[cfg(target_arch = "wasm32")]
-fn ask_mesh_file(_app: &mut TextureCraftApp) {}
-
 /// Remember a project path in File ▸ Recent projects.
 pub fn remember(app: &mut TextureCraftApp, path: &str) {
     app.ui.recent.retain(|p| p != path);
@@ -854,7 +716,7 @@ pub fn layout_file(app: &mut TextureCraftApp, save: bool) {
     app.ask_file(dialog.filter(tr("UI layout"), &["json"]).directory(dir.clone()), Bound::App, move |app, paths| {
         let Some(path) = paths.first() else { return };
         let result = if save {
-            let layout = crate::UiState { recent: Vec::new(), ..app.ui.clone() };
+            let layout = crate::UiState { recent: Vec::new(), named_layouts: Vec::new(), ..app.ui.clone() };
             std::fs::create_dir_all(&dir)
                 .map_err(|e| e.to_string())
                 .and_then(|_| serde_json::to_vec_pretty(&layout).map_err(|e| e.to_string()))
@@ -887,16 +749,16 @@ pub fn file_action(app: &mut TextureCraftApp, _ctx: &egui::Context, id: &str) ->
     match id {
         "file.open" => {
             app.ask_file(FileDialog::open().filter(tr("TextureCraft project or mesh"), crate::web_files::OPEN_EXTS), Bound::App, |app, paths| {
-                if let Some(p) = paths.first() {
-                    open_path(app, &p.display().to_string());
+                if let Some(path) = paths.first() {
+                    open_path(app, &path.display().to_string());
                 }
             });
             true
         }
         "file.save" if app.session.path.is_some() => {
-            if let Some(r) = app.run("file.save", json!({})) {
-                let p = r.get("path").and_then(|p| p.as_str()).unwrap_or_default().to_string();
-                app.toast(trf("Saved {path}", &[("path", &p)]), false);
+            if let Some(result) = app.run("file.save", json!({})) {
+                let saved_path = result["path"].as_str().unwrap_or_default();
+                app.toast(trf("Saved {path}", &[("path", &saved_path)]), false);
             }
             true
         }
@@ -910,40 +772,33 @@ pub fn file_action(app: &mut TextureCraftApp, _ctx: &egui::Context, id: &str) ->
         }
         "material.load" => {
             app.ask_file(FileDialog::open_many().filter(tr("Materials"), crate::web_files::MATERIAL_EXTS), Bound::Project, |app, paths| {
-                for p in paths {
-                    app.run("material.load", json!({"path": p.display().to_string()}));
+                for path in paths {
+                    app.run("material.load", json!({"path": path.display().to_string()}));
                 }
             });
             true
         }
         "file.importResources" | "resource.import" => {
-            app.ask_file(FileDialog::open_many().filter(tr("Images"), crate::web_files::IMAGE_EXTS), Bound::Project, |app, paths| {
-                if paths.is_empty() {
-                    return;
-                }
-                for p in paths {
-                    if let Some(r) = app.run("resource.import", json!({"path": p.display().to_string()})) {
-                        let name = r.get("name").and_then(|n| n.as_str()).unwrap_or_default().to_string();
-                        app.toast(trf("Imported {name}", &[("name", &name)]), false);
-                    }
-                }
-                app.ui.dock.focus(crate::docking::Panel::Assets);
-            });
+            crate::import_resources::open(app);
             true
         }
         "file.importMaterialX" => {
             app.ask_file(FileDialog::open().filter(tr("MaterialX materials"), &["mtlx"]), Bound::Project, |app, paths| {
-                if let Some(p) = paths.first()
-                    && let Some(r) = app.run("file.importMaterialX", json!({"path": p.display().to_string()}))
+                if let Some(path) = paths.first()
+                    && let Some(result) = app.run("file.importMaterialX", json!({"path": path.display().to_string()}))
                 {
-                    let name = r.get("material").and_then(|n| n.as_str()).unwrap_or_default().to_string();
-                    for w in r.get("warnings").and_then(|w| w.as_array()).into_iter().flatten().filter_map(|w| w.as_str()) {
-                        app.session.log.push(format!("MaterialX {name}: {w}"));
+                    let name = result["material"].as_str().unwrap_or_default();
+                    for warning in result["warnings"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str) {
+                        app.session.log.push(format!("MaterialX {name}: {warning}"));
                     }
                     app.toast(trf("Imported {name}", &[("name", &name)]), false);
                     app.ui.dock.focus(crate::docking::Panel::Layers);
                 }
             });
+            true
+        }
+        "file.importPbrFolder" => {
+            crate::pbr_import::pick(app);
             true
         }
         "file.exportMesh" => {
@@ -956,25 +811,26 @@ pub fn file_action(app: &mut TextureCraftApp, _ctx: &egui::Context, id: &str) ->
                 .filter(tr("USD binary, textures alongside"), &["usdc"])
                 .file_name(name);
             app.ask_file(dialog, Bound::Project, |app, paths| {
-                if let Some(p) = paths.first()
-                    && let Some(r) = app.run("file.exportMesh", json!({"path": p.display().to_string()}))
+                if let Some(path) = paths.first()
+                    && let Some(result) = app.run("file.exportMesh", json!({"path": path.display().to_string()}))
                 {
-                    let p = r.get("path").and_then(|p| p.as_str()).unwrap_or_default().to_string();
-                    app.toast(trf("Exported mesh to {path}", &[("path", &p)]), false);
+                    let saved_path = result["path"].as_str().unwrap_or_default();
+                    app.toast(trf("Exported mesh to {path}", &[("path", &saved_path)]), false);
                 }
             });
             true
         }
         "file.reimportMesh" => {
-            // The file the mesh came from is read again from disk; ask only when it's gone.
+            // Ask for a replacement only when the mesh source is missing
             if let Some(path) = app.session.remembered_mesh_path().map(str::to_string) {
                 reimport_mesh(app, path);
                 return true;
             }
+
             let dialog = FileDialog::open().filter(tr("3D meshes"), &texturecraft_engine::formats::mesh_import::MESH_EXTENSIONS);
             app.ask_file(dialog, Bound::Project, |app, paths| {
-                if let Some(p) = paths.first() {
-                    reimport_mesh(app, p.display().to_string());
+                if let Some(path) = paths.first() {
+                    reimport_mesh(app, path.display().to_string());
                 }
             });
             true
@@ -1101,7 +957,7 @@ pub(crate) fn export_params(app: &TextureCraftApp) -> serde_json::Value {
 fn export_settings_tab(app: &mut TextureCraftApp, ui: &mut Ui, presets: &[texturecraft_engine::formats::ExportPreset]) {
     ui.label(caption(tr("General export parameters")));
     egui::Grid::new("exp_grid").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
-        // The browser downloads the files instead.
+        // The browser downloads the files instead
         #[cfg(not(target_arch = "wasm32"))]
         {
             ui.label(tr("Output directory"));
@@ -1118,6 +974,7 @@ fn export_settings_tab(app: &mut TextureCraftApp, ui: &mut Ui, presets: &[textur
             ui.end_row();
         }
         ui.label(tr("Output template"));
+        let before = app.ui.export.preset.clone();
         egui::ComboBox::from_id_salt("exp_preset").width(360.0).selected_text(app.ui.export.preset.clone()).show_ui(ui, |ui| {
             for p in presets {
                 ui.selectable_value(&mut app.ui.export.preset, p.name.clone(), &p.name);
@@ -1129,6 +986,10 @@ fn export_settings_tab(app: &mut TextureCraftApp, ui: &mut Ui, presets: &[textur
                 ui.selectable_value(&mut app.ui.export.preset, p.name.clone(), &p.name);
             }
         });
+        if app.ui.export.preset != before {
+            let picked = std::mem::replace(&mut app.ui.export.preset, before);
+            crate::export_templates::select(app, picked);
+        }
         ui.end_row();
         ui.label(tr("File type"));
         ui.horizontal(|ui| {
@@ -1211,12 +1072,20 @@ fn export_settings_tab(app: &mut TextureCraftApp, ui: &mut Ui, presets: &[textur
 pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let tk = Tokens::get(ctx);
     if !app.ui.windows.export {
+        app.ui.export.ask = None;
         return;
     }
+
     let mut open = true;
     let mut do_export = false;
     let presets = texturecraft_engine::formats::builtin_presets();
     dialog("export_textures", tr("Export textures"), &mut open).fixed_size(vec2(820.0, 430.0)).show(ctx, |ui| {
+        // Nothing to export without a project
+        if !app.session.project_open {
+            ui.label(tr("No project is open"));
+            return;
+        }
+
         ui.horizontal(|ui| {
             for (i, t) in [tr("Settings"), tr("Output templates"), tr("List of exports")].iter().enumerate() {
                 if ui.selectable_label(app.ui.export.tab == i as u8, caption(t)).clicked() {
@@ -1231,6 +1100,7 @@ pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
                 crate::export_templates::tab(app, ui, &presets);
                 return;
             }
+
             ui.vertical(|ui| {
                 ui.set_width(180.0);
                 ui.label(RichText::new(tr("Texture sets")).strong());
@@ -1286,6 +1156,7 @@ pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
             });
         });
     });
+    crate::export_templates::ask(app, ctx);
     if do_export && export_sets(app) {
         app.ui.windows.export = false;
     }
@@ -1346,6 +1217,8 @@ mod tests {
 
     #[test]
     fn a_save_a_copy_answer_does_not_end_the_prompts_wait() {
+        // The harness draws the UI, and the i18n tests switch the process-wide language to ones its fonts cannot draw
+        let _language = crate::i18n::TEST_LANGUAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut h = harness();
         let app = h.state_mut();
         app.file_dialogs.set_override(Some(Box::new(|_| crate::file_dialogs::Answer::Cancelled)));
@@ -1357,9 +1230,12 @@ mod tests {
 
     #[test]
     fn a_save_as_already_on_its_way_ends_the_prompts_wait() {
+        // The harness draws the UI, and the i18n tests switch the process-wide language to ones its fonts cannot draw
+        let _language = crate::i18n::TEST_LANGUAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut h = harness();
         let app = h.state_mut();
-        // One call site, as File › Save As and the prompt's Save share one.
+
+        // One call site, as File › Save As and the prompt's Save share one
         for waiting in [false, true] {
             app.saving_for_prompt = waiting;
             ask_save_project(app, "file.saveAs");
@@ -1372,7 +1248,7 @@ mod tests {
     /// question open with buttons that still answer.
     #[test]
     fn a_change_after_the_dialog_saved_leaves_the_prompt_usable() {
-        // The harness keeps the process-wide language at English while this asserts on labels.
+        // The harness keeps the process-wide language at English while this asserts on labels
         let _language = crate::i18n::TEST_LANGUAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut h = harness();
         let app = h.state_mut();
@@ -1385,5 +1261,36 @@ mod tests {
         h.get_by_label("Cancel").click();
         h.run_steps(2);
         assert!(h.state().ui.windows.unsaved.is_none());
+    }
+
+    /// The History panel runs each step name through the translator (skipped when this build
+    /// embeds no catalog that translates "Remove layer"; `i18n` tests cover the template matching)
+    #[test]
+    fn history_rows_are_shown_in_the_interface_language() {
+        let _language = crate::i18n::TEST_LANGUAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(code) = crate::i18n::LANGUAGES.iter().map(|l| l.code).find(|code| {
+            crate::i18n::set_language(code);
+            *code != "en" && crate::i18n::tr("Remove layer") != "Remove layer"
+        }) else {
+            crate::i18n::set_language("en");
+            return;
+        };
+
+        let translated = crate::i18n::tr("Remove layer").to_string();
+        let mut h = harness();
+        {
+            let app = h.state_mut();
+            let layer = app.session.selected_layer().unwrap();
+            texturecraft_engine::execute(&mut app.session, "layer.remove", &json!({"layer": layer.0})).unwrap();
+            app.ui.dock.focus(crate::docking::Panel::History);
+            app.ui.prefs.language = code.into();
+        }
+        h.run_steps(4);
+        let shown = h.query_all_by_label(&translated).count();
+        let untranslated = h.query_all_by_label("Remove layer").count();
+        h.state_mut().ui.prefs.language = "en".into();
+        h.run_steps(4);
+        assert!(shown > 0 && untranslated == 0, "{code}: translated rows {shown}, English rows {untranslated}");
+        assert!(h.query_all_by_label("Remove layer").count() > 0);
     }
 }

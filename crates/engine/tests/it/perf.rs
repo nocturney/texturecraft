@@ -4,9 +4,11 @@ use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 use serde_json::{Value, json};
-use texturecraft_engine::compose::{DisplayKind, tile_bytes};
+use texturecraft_engine::compose::{DisplayKind, kinds_for, tile_bytes};
+use texturecraft_engine::core::Channel;
 use texturecraft_engine::geom::glam::Vec2;
 use texturecraft_engine::geom::primitives;
+use texturecraft_engine::texel::TILE;
 use texturecraft_engine::{Session, execute};
 
 // Exercise procedural fills, generators, a blurred mask, a folder and painted layers
@@ -50,12 +52,23 @@ fn stack(resolution: u32) -> Session {
     session
 }
 
-fn upload_bytes(s: &mut Session) -> usize {
-    let tiles = s.take_uploads(0);
-    let baked = s.baked(0).cloned().unwrap_or_default();
-    let comp = &s.caches[0].composite;
-    // As the UI does it (in parallel).
-    tiles.par_iter().flat_map_iter(|&(tx, ty)| DisplayKind::ALL.map(|k| tile_bytes(comp, &baked, k, tx, ty).len())).sum()
+/// Convert dirty tiles for a new set and report bytes for selected and all display kinds.
+/// Previously sent kinds can add conversion work when a set keeps its GPU textures.
+fn upload_bytes(session: &mut Session) -> (usize, usize) {
+    let tiles = session.take_uploads(0);
+    let empty = Default::default();
+    let baked = session.doc.baked.get(&0).unwrap_or(&empty);
+    let composite = &session.caches[0].composite;
+    let channels: Vec<Channel> = composite.channels.keys().copied().collect();
+    let kinds: Vec<DisplayKind> = kinds_for(&channels).collect();
+    let selected_bytes = tiles
+        .par_iter()
+        .flat_map_iter(|&(tile_x, tile_y)| kinds.iter().map(move |&kind| (kind, tile_x, tile_y)))
+        .map(|(kind, tile_x, tile_y)| tile_bytes(composite, baked, kind, tile_x, tile_y).len())
+        .sum();
+    let all_bytes_per_tile: usize = DisplayKind::ALL.iter().map(|kind| kind.bytes_per_texel() * (TILE * TILE) as usize).sum();
+
+    (selected_bytes, tiles.len() * all_bytes_per_tile)
 }
 
 fn mb(b: usize) -> f64 {
@@ -71,8 +84,8 @@ fn bench(res: u32) {
     s.update();
     println!("[{res}²] full recomposite (Session::update) {:.2?}", t.elapsed());
     let t = Instant::now();
-    let up = upload_bytes(&mut s);
-    println!("[{res}²] full display tile conversion {:.2?} ({:.0} MB)", t.elapsed(), mb(up));
+    let (up, all) = upload_bytes(&mut s);
+    println!("[{res}²] full display tile conversion {:.2?} ({:.0} MB needed kinds; {:.0} MB all kinds)", t.elapsed(), mb(up), mb(all));
 
     // The UI's budgeted update: a full recomposite spread over frames.
     s.caches[0].invalidate_all();
@@ -316,8 +329,13 @@ fn bench_8k_stroke_end() {
             s.update();
             let after = t.elapsed();
             let t = Instant::now();
-            let up = upload_bytes(&mut s);
-            println!("[8k] size {size}: end_stroke {end:.2?}, update {after:.2?} ({tiles} tiles), display {:.2?} ({:.1} MB)", t.elapsed(), mb(up));
+            let (up, all) = upload_bytes(&mut s);
+            println!(
+                "[8k] size {size}: end_stroke {end:.2?}, update {after:.2?} ({tiles} tiles), display {:.2?} ({:.1} MB needed kinds; {:.1} MB all kinds)",
+                t.elapsed(),
+                mb(up),
+                mb(all)
+            );
         }
     }
 }

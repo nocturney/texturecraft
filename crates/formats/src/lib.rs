@@ -35,21 +35,24 @@ pub mod materialx_read;
 pub mod mcmat;
 pub mod mesh_export;
 pub mod mesh_import;
+#[path = "pbr_map/mod.rs"]
+pub mod pbr_maps;
 pub mod presets;
 pub mod project_file;
+pub mod zip_read;
 
 pub use export::{
     Dest, ExportInput, ExportOptions, ExportPreset, ExportedFile, FileFormat, MapSpec, Padding, PlannedFile, SourceRef, VirtualMap, list_outputs, render_maps,
 };
-pub use image_res::{DecodedImage, coverage_png, decode_image, decode_image_within};
+pub use image_res::{DecodedImage, coverage_png, decode_cooked_image, decode_image, decode_image_within, gray16_png, gray16_resource};
 pub use mesh_export::{GlbTextures, NamedFiles, UsdExport, UsdFormat, glb_bytes, glb_export_options, obj_bytes, obj_with_mtl, usd_bytes, usd_export_options};
 pub use mesh_import::{HighPolyMesh, ImportedMesh, MeshFile, MeshReport, import_high_poly_bytes, import_mesh_bytes, mesh_report, self_contained_mesh};
 #[cfg(not(target_arch = "wasm32"))]
 pub use presets::load_preset;
 pub use presets::{builtin_preset, builtin_presets, preset_from_json, preset_to_json};
 pub use project_file::{
-    BakePaintData, DEFAULT_PROJECT_OPEN_LIMIT_GIB, ProjectFile, load_project_bytes, project_open_limit_gib, sanitize_resource_name, save_project_bytes,
-    set_project_open_limit_gib,
+    BakePaintData, DEFAULT_PROJECT_OPEN_LIMIT_GIB, MAX_RESOURCE_NAME_LEN, ProjectFile, RamReservation, load_project_bytes, project_open_limit_gib,
+    sanitize_resource_name, save_project_bytes, set_project_open_limit_gib,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -58,7 +61,8 @@ pub use export::write_files;
 pub use mesh_import::{import_mesh, read_mesh_file};
 #[cfg(not(target_arch = "wasm32"))]
 pub use project_file::{
-    DEFAULT_RAM_PERCENT, DEFAULT_RESERVED_CORES, available_save_resources, load_project, save_project, save_ram_budget, set_save_resources,
+    DEFAULT_RAM_PERCENT, DEFAULT_RESERVED_CORES, available_save_resources, configured_ram_budget, load_project, save_project, save_ram_budget,
+    set_save_resources,
 };
 
 #[derive(Debug, thiserror::Error)]

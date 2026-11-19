@@ -485,7 +485,7 @@ fn shade_mesh(i: VOut, front: bool) -> Shaded {
     }
 
     if (g.bake_neutral.w > 0.5) {
-        return Shaded(neutral_color(n, n_geo, v, i.wpos, orm.r, aux.rgb), vec3<f32>(0.0));
+        return Shaded(neutral_color(n, n_geo, t, b, v, i.wpos, orm.r, aux.rgb), vec3<f32>(0.0));
     }
 
     // Change the alpha dither each frame so accumulation smooths it

@@ -247,6 +247,37 @@ fn panic_hunt() {
     }
 }
 
+/// A colour param is `[r, g, b]` in linear 0..1 or `"#rrggbb"` in sRGB, and the same digits differ
+/// between the two, so every command that takes a colour says which form is which.
+#[test]
+fn colour_params_name_their_colour_space() {
+    for spec in command_specs() {
+        if ["color?", "colors?", "Color?"].iter().any(|k| spec.params.contains(k)) {
+            assert!(spec.params.contains("linear"), "{}: {}", spec.id, spec.params);
+            let hex = spec.params.matches("\"#rrggbb\"").count();
+            assert_eq!(hex, spec.params.matches("\"#rrggbb\" sRGB").count(), "{}: {}", spec.id, spec.params);
+        }
+    }
+    // These read their colours through `color_param`, which takes both forms.
+    for id in
+        ["layer.add.fill", "layer.fill.set", "effect.add.fill", "effect.add.filter", "tool.material", "mask.add.colorSelection", "resource.text", "display.set"]
+    {
+        let spec = command_specs().iter().find(|c| c.id == id).unwrap();
+        assert!(spec.params.contains("[r,g,b] linear or \"#rrggbb\" sRGB"), "{id}: {}", spec.params);
+    }
+    let base_color = |color: Value| {
+        let mut s = session();
+        execute(&mut s, "layer.add.fill", &json!({ "color": color })).unwrap();
+        s.update();
+        s.caches[0].composite.value(Channel::BaseColor, 128, 128)
+    };
+    let hex = base_color(json!("#c8102e"));
+    let linear = base_color(json!([0.5776, 0.0052, 0.0273]));
+    assert!(hex.iter().zip(&linear).all(|(a, b)| (a - b).abs() < 2e-3), "{hex:?} {linear:?}");
+    let digits = base_color(json!([0.7843, 0.0627, 0.1804]));
+    assert!(digits[0] - hex[0] > 0.1, "{digits:?} {hex:?}");
+}
+
 #[test]
 fn copy_paste_flatten_and_resize_keep_the_look() {
     let mut s = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 256).unwrap();
@@ -747,47 +778,97 @@ fn changing_generator_kind_keeps_the_effect_identity_and_settings() {
 fn unparseable_color_param_returns_error() {
     let mut s = session();
     let err = execute(&mut s, "layer.add.fill", &json!({"color": "#fff"})).unwrap_err();
-    assert_eq!(err.to_string(), "`layer.add.fill`: `color` must be a color ([r, g, b] linear or \"#rrggbb\")");
+    assert_eq!(err.to_string(), "`layer.add.fill`: `color` must be a color ([r, g, b] linear or \"#rrggbb\" sRGB)");
 
     let err = execute(&mut s, "layer.fill.set", &json!({"channel": "baseColor", "color": "#123"})).unwrap_err();
-    assert_eq!(err.to_string(), "`layer.fill.set`: `color` must be a color ([r, g, b] linear or \"#rrggbb\")");
+    assert_eq!(err.to_string(), "`layer.fill.set`: `color` must be a color ([r, g, b] linear or \"#rrggbb\" sRGB)");
 
     let err = execute(&mut s, "tool.material", &json!({"channel": "baseColor", "color": "invalid"})).unwrap_err();
-    assert_eq!(err.to_string(), "`tool.material`: `color` must be a color ([r, g, b] linear or \"#rrggbb\")");
+    assert_eq!(err.to_string(), "`tool.material`: `color` must be a color ([r, g, b] linear or \"#rrggbb\" sRGB)");
 
     let err = execute(&mut s, "mask.add.colorSelection", &json!({"color": "#xyz"})).unwrap_err();
-    assert_eq!(err.to_string(), "`mask.add.colorSelection`: `color` must be a color ([r, g, b] linear or \"#rrggbb\")");
+    assert_eq!(err.to_string(), "`mask.add.colorSelection`: `color` must be a color ([r, g, b] linear or \"#rrggbb\" sRGB)");
 
     let err = execute(&mut s, "display.set", &json!({"scatterColor": "#12345"})).unwrap_err();
-    assert_eq!(err.to_string(), "`display.set`: `scatterColor` must be a color ([r, g, b] linear or \"#rrggbb\")");
+    assert_eq!(err.to_string(), "`display.set`: `scatterColor` must be a color ([r, g, b] linear or \"#rrggbb\" sRGB)");
 
     let rev_before = s.revision;
     let exposure_before = s.doc.project.display.env_exposure;
     let err = execute(&mut s, "display.set", &json!({"exposure": 2.0, "scatterColor": "invalid"})).unwrap_err();
-    assert_eq!(err.to_string(), "`display.set`: `scatterColor` must be a color ([r, g, b] linear or \"#rrggbb\")");
+    assert_eq!(err.to_string(), "`display.set`: `scatterColor` must be a color ([r, g, b] linear or \"#rrggbb\" sRGB)");
     assert_eq!(s.doc.project.display.env_exposure, exposure_before);
     assert_eq!(s.revision, rev_before);
 
     let mask_before = s.tool.mask_value;
     let err = execute(&mut s, "tool.material", &json!({"maskValue": 0.25, "channel": "baseColor", "color": "invalid"})).unwrap_err();
-    assert_eq!(err.to_string(), "`tool.material`: `color` must be a color ([r, g, b] linear or \"#rrggbb\")");
+    assert_eq!(err.to_string(), "`tool.material`: `color` must be a color ([r, g, b] linear or \"#rrggbb\" sRGB)");
     assert_eq!(s.tool.mask_value, mask_before);
     assert_eq!(s.revision, rev_before);
 
     let err = execute(&mut s, "tool.material", &json!({"color": "invalid"})).unwrap_err();
-    assert_eq!(err.to_string(), "`tool.material`: `color` must be a color ([r, g, b] linear or \"#rrggbb\")");
+    assert_eq!(err.to_string(), "`tool.material`: `color` must be a color ([r, g, b] linear or \"#rrggbb\" sRGB)");
     assert_eq!(s.revision, rev_before);
 
     let err = execute(&mut s, "layer.add.fill", &json!({"color": [1e40, 0.0, 0.0]})).unwrap_err();
-    assert_eq!(err.to_string(), "`layer.add.fill`: `color` must be a color ([r, g, b] linear or \"#rrggbb\")");
+    assert_eq!(err.to_string(), "`layer.add.fill`: `color` must be a color ([r, g, b] linear or \"#rrggbb\" sRGB)");
     assert_eq!(s.revision, rev_before);
 
     let err = execute(&mut s, "layer.fill.set", &json!({"channel": "baseColor", "procedural": "noise", "color": "red"})).unwrap_err();
-    assert_eq!(err.to_string(), "`layer.fill.set`: `color` must be a color ([r, g, b] linear or \"#rrggbb\")");
+    assert_eq!(err.to_string(), "`layer.fill.set`: `color` must be a color ([r, g, b] linear or \"#rrggbb\" sRGB)");
     assert_eq!(s.revision, rev_before);
 
     assert!(execute(&mut s, "tool.cloneSource", &json!({"uv": [0.2, 0.8, 0.4]})).is_err());
     execute(&mut s, "tool.polygonFill", &Value::Null).unwrap();
     let err = execute(&mut s, "tool.click", &json!({"uv": [0.2, 0.8, 0.4]})).unwrap_err();
     assert_eq!(err.to_string(), "`tool.click`: a 2D view point needs `uv` as [u, v]");
+}
+
+#[test]
+fn resetting_a_stencil_puts_back_its_placement_only() {
+    let mut stencil = texturecraft_engine::StencilState::new("logo.png");
+    stencil.center = [0.4, -0.2];
+    stencil.scale = 2.0;
+    stencil.rotation = 30.0;
+    stencil.opacity = 0.9;
+    stencil.tile = true;
+    stencil.reset_placement();
+    assert_eq!((stencil.center, stencil.scale, stencil.rotation, stencil.opacity, stencil.tile), ([0.0, 0.0], 0.8, 0.0, 0.9, true));
+}
+
+#[test]
+fn blending_set_gives_each_channel_its_own_mode_and_opacity_in_one_undo_step() {
+    let mut s = session();
+    let layer = execute(&mut s, "layer.add.paint", &json!({})).unwrap()["layer"].as_u64().unwrap();
+    let read = |s: &Session| s.doc.project.layers[&texturecraft_engine::core::LayerId(layer)].channels.clone();
+    let before = read(&s);
+    execute(
+        &mut s,
+        "layer.blending.set",
+        &json!({"layer": layer, "channels": {"baseColor": {"mode": "Multiply", "opacity": 0.25}, "roughness": {"opacity": 0.5}}}),
+    )
+    .unwrap();
+    let after = read(&s);
+    assert_eq!((after[&Channel::BaseColor].mode, after[&Channel::BaseColor].opacity), (texturecraft_engine::core::BlendMode::Multiply, 0.25));
+    assert_eq!((after[&Channel::Roughness].mode, after[&Channel::Roughness].opacity), (before[&Channel::Roughness].mode, 0.5));
+    assert_eq!(after[&Channel::Metallic], before[&Channel::Metallic], "channels not listed stay as they were");
+    execute(&mut s, "edit.undo", &Value::Null).unwrap();
+    assert_eq!(read(&s), before, "one undo step restores every listed channel");
+    execute(&mut s, "edit.redo", &Value::Null).unwrap();
+
+    // A channel the layer has disabled stays disabled
+    execute(&mut s, "layer.blend", &json!({"layer": layer, "channel": "metallic", "enabled": false})).unwrap();
+    execute(&mut s, "layer.blending.set", &json!({"layer": layer, "channels": {"metallic": {"opacity": 0.1}}})).unwrap();
+    assert!(!read(&s).contains_key(&Channel::Metallic));
+    let stable = read(&s);
+    for bad in [
+        json!({"layer": layer}),
+        json!({"layer": layer, "channels": {"nope": {}}}),
+        json!({"layer": layer, "channels": {"baseColor": {"mode": "Multiply"}, "nope": {}}}),
+        json!({"layer": layer, "channels": {"baseColor": {"mode": "???"}}}),
+    ] {
+        assert!(execute(&mut s, "layer.blending.set", &bad).is_err(), "{bad}");
+        assert_eq!(read(&s), stable, "an error changes nothing");
+    }
+    execute(&mut s, "layer.blending.set", &json!({"layer": layer, "channels": {"baseColor": {"opacity": 2.0}, "roughness": {"opacity": -1.0}}})).unwrap();
+    assert_eq!((read(&s)[&Channel::BaseColor].opacity, read(&s)[&Channel::Roughness].opacity), (1.0, 0.0), "opacity is clamped");
 }

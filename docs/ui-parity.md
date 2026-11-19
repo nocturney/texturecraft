@@ -34,16 +34,19 @@ stable review references, not a complete inventory of the reference interface.
 | UI-04 | P1 | Fill sampling/filtering and UV wrap controls | **UI + source.** The reference fill panel exposes filtering and wrapping. TextureCraft's fill editor exposes projection, transforms and channel sources without those controls. No per-fill UI workaround was established | Set filtering and wrapping per fill, inspect the difference at a UV border, and retain the settings across save/reopen |
 | UI-05 | P2 | Physical-size fill scaling | **UI + source.** The reference Scale menu offers tiling or physical size. TextureCraft exposes dimensionless scale only | Give a pattern a physical size and show that it keeps that size on meshes with different dimensions |
 | UI-06 | P2 | Warp and per-UV-tile fill projection choices | **UI + source.** Both choices were visible in the reference projection menu. TextureCraft's ordinary fill picker has UV, tri-planar, planar, spherical and cylindrical choices; decals have a separate editor. A warp filter is a different operation | Exercise the two projection workflows on a multi-tile asset, with explicit controls, persistence and command inspection |
-| UI-08 | P2 | Save a reusable user smart mask | **UI + source.** The reference mask menu has a smart-mask creation action. TextureCraft offers built-in smart masks and Create smart material, but no equivalent action for saving just the edited mask | Save a multi-effect mask, apply it to another layer/project, and retain its parameters and resource dependencies |
-| UI-09 | P2 | Export/copy a mask bitmap from its context menu | **UI.** The reference exposes file and clipboard mask export; these actions are absent from TextureCraft's inspected menu. Previewing a mask is available, and is not a full-resolution bitmap-export check | Export the evaluated grayscale mask at its texture/tile resolution with explicit bit depth and orientation; test the file and clipboard paths |
-| UI-10 | P1 | MaterialX output from the texture-export dialog | **UI + source + commands.** The dialog has no MaterialX option and `export_params` does not forward `materialX`. Command export with the OpenPBR preset successfully wrote `.mtlx` and maps | Enable MaterialX in the UI, preview the manifest and texture outputs, export, and validate the same result as the command route |
+| UI-09 | P2 | Export/copy a mask bitmap from its context menu | **UI + source.** Both actions are now in the layer menu. File export writes a 16-bit grayscale PNG per tile; clipboard copy uses an 8-bit grayscale atlas. There is no bit-depth chooser | Repeat file and clipboard export in the native app, including a UV-tiled set; the engine and headless UI tests cover the values and menu paths |
 | UI-11 | P1 | Configurable project/display color-management workflow | **Source.** `DisplaySettings` provides fixed Linear/ACES-filmic tone mapping; export has fixed color spaces and metadata. There is no OCIO configuration/display/view model to expose in project or display settings | Select a configuration, working space and display/view transform; retain them; distinguish color channels from data maps through painting, preview and export |
 
-UI-02 and UI-07 were findings at the assessed `62b2b13` revision and are no longer missing in
+UI-02, UI-07 and UI-08 were findings at the assessed `62b2b13` revision and are no longer missing in
 the integrated source. Effect rows now have a Rename action and editor, and anchors can record
 intermediate mask values for higher layers. Engine and compositor regressions cover mask-anchor
-consumption. The original UI task audit did not exercise these new controls; a live UI rename,
-undo and save/reopen task remains to be repeated on the integrated build.
+consumption. Right-click a layer > *Create smart mask* saves its mask (all effects, parameters, painted pixels and images) as a user smart mask that the shelf lists under *My smart masks*; engine tests cover applying it to another layer and a fresh project. The original UI task audit did not exercise these new controls. The rename and anchor controls are now covered
+by interface tests (`crates/ui-egui/tests/it/rename_anchor.rs`): renaming an effect row from its
+context menu, Undo and Redo of the rename, Escape, and Save as and Open keeping the name; adding an
+anchor point to a mask from the Add effect menu, picking it as the Source of a fill in a higher
+layer's mask, the resulting composite matching the engine-only result, and Save as and Open keeping
+the link. These run in the headless test harness; a live run in the native app on the integrated
+build is still not done.
 
 The relevant implementations are [layer rows, menus and fill/brush editors](../crates/ui-egui/src/dock.rs),
 [generator properties](../crates/ui-egui/src/generator_panel.rs),
@@ -57,7 +60,15 @@ The relevant implementations are [layer rows, menus and fill/brush editors](../c
 | ID | Area | Observed limit | Next check |
 |---|---|---|---|
 | UI-12 | Generator depth and property coverage | **UI + source.** The picker contains seven kinds. Switching to Position, changing Global balance and duplicating the effect worked. Shared global adjustments, resolution and input slots already exist; that does not establish the richer generator/control inventory in [#374](https://github.com/storytold/texturecraft/issues/374) | Audit each generator's inputs, micro-detail behavior and controls against the reference; do not count seven shared implementations as equivalent to its whole catalog |
-| UI-13 | Narrow workspace readability | **UI.** At 1280 × 800 the app rendered, both views stayed visible and the toolbar exposed scroll arrows. Layer names/types became heavily truncated, the layer toolbar wrapped, and Properties needed scrolling. This was not an input-failure or docking-persistence test | Repeat the editing tasks at smaller sizes, widen/rearrange panels, check full-name tooltips and keyboard access, and retain the layout after restart |
+| UI-13 | Narrow workspace readability | **UI.** At 1280 × 800 the app rendered, both views stayed visible and the toolbar exposed scroll arrows. Layer names/types became heavily truncated, the layer toolbar wrapped, and Properties needed scrolling. This was not an input-failure or docking-persistence test | Repeat the editing tasks at smaller sizes, widen/rearrange panels, check full-name tooltips and keyboard access, and retain the layout after restart. Since then: the Layers toolbar stays on one row at 1280 × 800 (its channel box shrinks), and a cut-short layer name or type shows in full on hover. Properties scrolling and restart persistence are unchanged |
+| UI-14 | Assets panel filters | **UI + source.** The type dropdown lists the reference entries in its order, Fonts and Show all included. Saved searches and Filter by path are separate scrollable panes with a divider that supports pointer and keyboard resizing and saves its position with the UI state ([#640](https://github.com/storytold/texturecraft/issues/640)). Fonts, the built-in saved searches Favorites, 3D Assets and Flattened layers, and the System fonts and User fonts libraries are listed but greyed with "Not available yet" | Give fonts, favorites, 3D assets and flattened layers real assets, then enable those rows and check that each one filters the grid |
+
+File > Import resources ([#638](https://github.com/storytold/texturecraft/issues/638)) queues
+images and materials for the open project. Images support a name prefix and a usage. Texture
+and undefined usages store the image, while environment and alpha also apply it to the scene
+or brush. Filter the list by usage or remove rows before importing. Color LUT, post effects
+and asset-library import remain unavailable. The browser imports images straight from its file
+picker.
 
 Broader properties/filter work remains tracked in
 [#433](https://github.com/storytold/texturecraft/issues/433). Its individual rows need checking
@@ -70,7 +81,7 @@ list, not a feature-completion denominator.
 
 | Check | Surface | Result | Observable evidence / limit |
 |---|---|---|---|
-| F01 New project | UI | Pass | Ctrl+N, built-in Cube, 1024 px, Create produced a new project with one empty paint layer. The native mesh-file selection path was not completed in this deeper pass |
+| F01 New project | UI | Pass (tests) | The window no longer offers built-in meshes ([#636](https://github.com/storytold/texturecraft/issues/636)). `tests/it/new_project_window.rs` covers the section order, the defaults, the disabled settings and their hint, Create waiting for a mesh file, and a UV tile project created from a mesh file. A manual pass with the native file picker is still to do |
 | F02 Paint in 3D | UI | Pass | A mouse drag produced a visible stroke in 3D and its UV representation; inspection showed a Paint stroke undo step and painted tiles |
 | F03 Paint in 2D | UI | Pass | A separate UV-view drag increased painted tiles from 7 to 21 per active channel and changed the visible image |
 | F04 Undo and redo | UI | Pass | Ctrl+Z restored 7 tiles and history depth 2; Ctrl+Y restored 21 tiles and depth 3 |
@@ -106,9 +117,11 @@ built-in `udim_plane`, a uniform fill and a tile-1002 resolution override.
 - The 2D paint cursor was visible, and direct 2D painting worked. This does not reproduce the older
   cursor/painting reports on this setup.
 - Brush size/hardness and flow/angle gestures have a visible hint. Hardness is present under
-  Flow and opacity; Angle has its own section. Their absence must not be inferred from the initial
-  scrolled position. The broader precision/shortcut concerns in
-  [#545](https://github.com/storytold/texturecraft/issues/545) still need an input-device task test.
+  Alpha > Parameters; Angle has its own section. Their absence must not be inferred from the initial
+  scrolled position. The shortcut overview lists Shift+wheel and Ctrl+wheel (brush size, 3D and 2D
+  view), Ctrl+right-drag, Ctrl+left-drag and the fine mode (Ctrl+Shift+right-drag changes size and
+  hardness by a tenth). Pen precision in [#545](https://github.com/storytold/texturecraft/issues/545)
+  still needs an input-device task test.
 - The shelf displayed four columns at the larger size, with type controls and search. Do not
   treat every older shelf-layout request as a currently missing implementation.
 - A missing mask-thumbnail menu does not mean mask effects are unavailable: the layer-name menu

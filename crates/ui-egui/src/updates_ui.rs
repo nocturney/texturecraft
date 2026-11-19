@@ -126,7 +126,6 @@ mod tests {
         let mut h = Harness::builder().with_size(egui::vec2(1600.0, 960.0)).build_eframe(|cc| TextureCraftApp::new(cc, session));
         h.state_mut().updates_rt.updater =
             Updater::new(&crate::UPDATE_APP, "0.0.1").with_source(ask).with_paths(Paths::under(&root)).with_pins_path(root.join("pins.json"));
-        h.state_mut().ui.windows.start = false;
         h.run_steps(2);
         h
     }

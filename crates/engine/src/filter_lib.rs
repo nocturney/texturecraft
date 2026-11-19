@@ -149,10 +149,11 @@ fn mat_finish(id: &str) -> Option<Fill> {
         "matFinishHammered" => (ProceduralKind::Hammered, 6.0, [0.25, 0.45], 0.08),
         _ => return None,
     };
+
     let pattern = Procedural { scale, ..Procedural::new(kind) };
     let mut fill = Fill { projection: Projection::Triplanar { scale: 1.0, sharpness: 8.0, offset: [0.0; 3] }, ..Fill::default() };
-    fill.sources.insert(Channel::Roughness, Source::Procedural { pattern: pattern.clone(), low: [rough[0]; 3], high: [rough[1]; 3] });
-    fill.sources.insert(Channel::Height, Source::Procedural { pattern, low: [-height; 3], high: [height; 3] });
+    fill.sources.insert(Channel::Roughness, Source::Procedural { pattern: pattern.clone(), low: [rough[0]; 3], high: [rough[1]; 3], ramp: Vec::new() });
+    fill.sources.insert(Channel::Height, Source::Procedural { pattern, low: [-height; 3], high: [height; 3], ramp: Vec::new() });
     Some(fill)
 }
 
@@ -264,7 +265,7 @@ pub(crate) fn apply(p: &Value, f: &mut Filter, cmd: &str) -> Result<()> {
                 let parsed: Option<Vec<[f32; 3]>> = list.as_array().and_then(|a| a.iter().map(|c| color_of(c).map(|v| v.map(|x| x.clamp(0.0, 1.0)))).collect());
                 match parsed {
                     Some(c) if (1..=16).contains(&c.len()) => *colors = c,
-                    _ => return Err(bad(cmd, "`colors` must be 1 to 16 colors ([r, g, b] linear or \"#rrggbb\")")),
+                    _ => return Err(bad(cmd, "`colors` must be 1 to 16 colors ([r, g, b] linear or \"#rrggbb\" sRGB)")),
                 }
             }
         }

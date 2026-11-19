@@ -143,11 +143,7 @@ impl StackKey {
         let mut referenced_images = BTreeSet::new();
         if !images.is_empty() {
             let mut record_image_reference = |source: &Source| {
-                if let Source::Image { name, .. } = source
-                    && let Some((name, _)) = images.get_key_value(name)
-                {
-                    referenced_images.insert(name);
-                }
+                referenced_images.extend(source.images().into_iter().filter_map(|name| images.get_key_value(name)).map(|(name, _)| name));
             };
             for layer in render_tree.iter().filter_map(|id| project.layers.get(id)) {
                 if let LayerKind::Fill(fill) = &layer.kind {

@@ -292,21 +292,23 @@ fn check_buffer_uris(doc: &gltf::Document) -> Result<()> {
 }
 
 pub(crate) fn percent_decode(s: &str) -> Option<String> {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while let Some(&c) = b.get(i) {
-        let hex = |k: usize| b.get(k).and_then(|h| (*h as char).to_digit(16));
-        match (c, hex(i + 1), hex(i + 2)) {
-            (b'%', Some(h), Some(l)) => {
-                out.push((h * 16 + l) as u8);
-                i += 3;
-            }
-            _ => {
-                out.push(c);
-                i += 1;
-            }
+    craft_mesh::gltf::uri_decode_strict(s)
+}
+
+#[cfg(test)]
+mod uri_decode_tests {
+    use super::percent_decode;
+
+    #[test]
+    fn strict_shared_uri_decoder_preserves_reference_policy() {
+        assert_eq!(percent_decode("texture%20é%2B.png"), Some("texture é+.png".into()));
+        assert_eq!(percent_decode("a+b%GG%2"), Some("a+b%GG%2".into()));
+        assert_eq!(percent_decode("%252e%252e"), Some("%2e%2e".into()));
+        // Decoding does not replace the external-reference confinement checks.
+        assert_eq!(percent_decode("%2e%2e%2fsecret"), Some("../secret".into()));
+        assert_eq!(percent_decode("%00"), Some("\0".into()));
+        for uri in ["%FF", "%C0%AF", "%ED%A0%80", "%E2%82"] {
+            assert_eq!(percent_decode(uri), None, "{uri}");
         }
     }
-    String::from_utf8(out).ok()
 }

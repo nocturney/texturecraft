@@ -1,6 +1,10 @@
 //! Files: projects (`.tcraft`), mesh import, texture export. Byte-based functions work on the
 //! web; path-based commands are native only.
 
+use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use serde_json::{Value, json};
 #[cfg(not(target_arch = "wasm32"))]
 use texturecraft_core::{NormalFormat, PROJECT_EXT};
@@ -19,7 +23,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New project from a mesh file",
             [],
             None,
-            "{mesh: path to .glb/.gltf/.fbx/.dae/.usd/.usda/.usdc/.usdz/.abc/.obj/.ply/.stl, resolution?: 2048, name?, uvTiles?: bool (UDIM; default: when the UVs leave tile 1001), template?: project template name}",
+            "{mesh: path to .glb/.gltf/.fbx/.dae/.usd/.usda/.usdc/.usdz/.abc/.obj/.ply/.stl, resolution?: 2048, name?, uvTiles?: bool (UDIM; default: when the UVs leave tile 1001), template?: project template name, importCameras?: bool (default true: keep the cameras stored in the file)}",
             always,
             new_from_mesh
         ),
@@ -51,7 +55,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export textures",
             ["File"],
             None,
-            "{dir, preset?: built-in or user preset name, or a preset object {name, maps}, ts?: index|\"all\", format?: png|jpg|tga|tif|exr|..., bitDepth?, padding?: none|dilation|dilationDefault|infinite, dilation?: px, size?: px, normalFormat?: openGl|directX, colorSpace?: sRGB (default for 8/16-bit files)|Linear Rec.709 (default for exr, hdr)|ACEScg|ACES2065-1 (colour maps are converted, data maps never are; 8/16-bit files clamp to 0-1; a chosen space is also recorded in the colour maps: an ICC profile in PNG, JPEG, TIFF and WebP, the chromaticities in EXR; TGA, BMP and HDR can't hold one and warn), materialX?: bool (also write a .mtlx OpenPBR material per texture set; needs the \"OpenPBR (separate maps)\" preset)}",
+            "{dir, preset?: built-in or user preset name, or a preset object {name, maps}, ts?: index|[indexes]|\"all\", format?: png|jpg|tga|tif|exr|..., bitDepth?, padding?: none|dilation|dilationDefault|infinite, dilation?: px, size?: px, normalFormat?: openGl|directX, colorSpace?: sRGB (default for 8/16-bit files)|Linear Rec.709 (default for exr, hdr)|ACEScg|ACES2065-1 (colour maps are converted, data maps never are; 8/16-bit files clamp to 0-1; a chosen space is also recorded in the colour maps: an ICC profile in PNG, JPEG, TIFF and WebP, the chromaticities in EXR; TGA, BMP and HDR can't hold one and warn), materialX?: bool (also write a .mtlx OpenPBR material per texture set; needs the \"OpenPBR (separate maps)\" preset)}",
             always,
             export_textures
         ),
@@ -140,6 +144,7 @@ impl Session {
     /// for UV-tiled sets, or nothing for them without `tiled`).
     fn material_files(&mut self, opts: ExportOptions, tiled: bool, materials: usize) -> Result<Vec<Vec<ExportedFile>>> {
         let opts = ExportOptions { atlas: true, ..opts };
+
         (0..materials)
             .map(|m| match self.texture_set_of_material(m) {
                 Some(ts) if tiled || self.doc.project.texture_sets.get(ts).is_some_and(|t| t.tile_grid().is_none()) => self.export_files(&[ts], &opts),
@@ -155,20 +160,31 @@ impl Session {
 
     /// [`Session::from_mesh_bytes`] with a UV tile mode (see [`Session::new_project_tiled`]).
     pub fn from_mesh_bytes_tiled(file_name: &str, bytes: &[u8], resolution: u32, name: &str, uv_tiles: Option<bool>) -> Result<Session> {
-        let imported = texturecraft_formats::import_mesh_bytes(file_name, bytes).map_err(fe)?;
-        let ext = ext_of(file_name);
-        let mut s = Session::new_project_tiled(name, imported.mesh, &format!("mesh.{ext}"), Some((ext, bytes.to_vec())), resolution, uv_tiles)?;
-        s.doc.project.mesh_file = leaf_of(file_name);
-        s.doc.project.cameras = imported.cameras;
-        s.log.extend(imported.report.warnings.iter().cloned());
-        s.log.push(format!(
+        Self::from_mesh_source(file_name, Cow::Borrowed(bytes), resolution, name, uv_tiles)
+    }
+
+    fn from_mesh_source(file_name: &str, bytes: Cow<'_, [u8]>, resolution: u32, name: &str, uv_tiles: Option<bool>) -> Result<Session> {
+        let imported = texturecraft_formats::import_mesh_bytes(file_name, &bytes).map_err(fe)?;
+        let extension = ext_of(file_name);
+        let mut session = Session::new_project_tiled(name, imported.mesh, &format!("mesh.{extension}"), None, resolution, uv_tiles)?;
+
+        // Packed mesh files can have spare capacity that the project would otherwise retain
+        let mut source = bytes.into_owned();
+        source.shrink_to_fit();
+        session.mesh_source = Some((extension, source));
+        session.doc.project.mesh_file = leaf_of(file_name);
+        session.doc.project.cameras = imported.cameras;
+
+        session.log.extend(imported.report.warnings);
+        session.log.push(format!(
             "Imported {} ({} triangles, {} materials{})",
             file_name,
             imported.report.triangles,
             imported.report.materials,
             if imported.report.uvs_generated { ", UVs generated" } else { "" }
         ));
-        Ok(s)
+
+        Ok(session)
     }
 
     /// Open a `.tcraft` project from bytes.
@@ -198,9 +214,20 @@ impl Session {
         Ok(s)
     }
 
-    /// The project as a `ProjectFile` (for saving).
+    /// The project with independently owned resource bytes.
     pub fn project_file(&self) -> ProjectFile {
+        let resources = self.doc.resources.iter().map(|(name, bytes)| (name.clone(), bytes.as_ref().clone())).collect();
+        self.project_with_resources(resources)
+    }
+
+    /// A save snapshot that shares immutable resource payloads with the document.
+    pub fn project_snapshot(&self) -> ProjectFile<Arc<Vec<u8>>> {
+        self.project_with_resources(self.doc.resources.clone())
+    }
+
+    fn project_with_resources<Resource>(&self, resources: BTreeMap<String, Resource>) -> ProjectFile<Resource> {
         let mut pixels = self.doc.pixels.clone();
+
         // Drop pixel images whose size no longer matches their texture set
         let size_of = |id: texturecraft_core::LayerId| {
             self.doc.project.locate(id).and_then(|(ts, _, _)| self.doc.project.texture_sets.get(ts)).map(TextureSet::size).or_else(|| {
@@ -225,28 +252,33 @@ impl Session {
             cage,
             bake_paint: self.saved_bake_paint(),
             thumbnail: None,
-            resources: self.doc.resources.iter().map(|(k, v)| (k.clone(), v.as_ref().clone())).collect(),
+            resources,
             warnings: Vec::new(),
         }
     }
 
     pub fn to_project_bytes(&self) -> Result<Vec<u8>> {
-        texturecraft_formats::save_project_bytes(&self.project_file()).map_err(fe)
+        let mut reservation = texturecraft_formats::RamReservation::for_save().map_err(fe)?;
+        reservation.save_bytes(&self.project_snapshot()).map_err(fe)
     }
 
     /// Render every export file for texture sets `sets` (in memory; works on the web).
     pub fn export_files(&mut self, sets: &[usize], opts: &ExportOptions) -> Result<Vec<ExportedFile>> {
-        self.update();
+        if self.solo.is_none() {
+            self.update();
+        }
+
         let mesh_name = stem_of(self.doc.project.mesh.trim_start_matches("builtin:"));
         let mut out = Vec::new();
         let empty = Default::default();
         for &ts in sets {
             let cache = self.caches.get(ts).ok_or_else(|| EngineError::Other(format!("no texture set {ts}")))?;
+            let composite = self.document_composite(ts, &cache.covered_tiles).ok_or_else(|| EngineError::Other(format!("no texture set {ts}")))?;
             let coverage = cache.gbuf.coverage_mask();
             let input = ExportInput {
                 project: &self.doc.project,
                 ts,
-                composite: &cache.composite,
+                composite: &composite,
                 baked: self.doc.baked.get(&ts).unwrap_or(&empty),
                 coverage: &coverage,
                 mesh_name: &mesh_name,
@@ -275,6 +307,7 @@ pub fn export_options(s: &Session, p: &Value, cmd: &str) -> Result<ExportOptions
         Some(v @ Value::Object(_)) => Some(crate::preset_cmds::preset_param(v, cmd)?),
         Some(_) => return Err(bad(cmd, "`preset` must be a preset name or a preset object")),
     };
+
     let preset = preset.ok_or_else(|| bad(cmd, format!("unknown export preset {}", p.get("preset").unwrap_or(&Value::Null))))?;
     let mut o = ExportOptions::new(preset);
     if let Some(f) = strp(p, "format") {
@@ -305,7 +338,8 @@ pub fn export_options(s: &Session, p: &Value, cmd: &str) -> Result<ExportOptions
                     .ok_or_else(|| bad(cmd, format!("unknown colorSpace `{name}` (sRGB, Linear Rec.709, ACEScg or ACES2065-1)")))?,
             );
         }
-        // A value of the wrong type is an error, not the format's default space.
+
+        // A value of the wrong type is an error, not the format's default space
         Some(other) => return Err(bad(cmd, format!("`colorSpace` is a name (sRGB, Linear Rec.709, ACEScg or ACES2065-1), not {other}"))),
     }
     Ok(o)
@@ -315,8 +349,22 @@ fn sets_param(s: &Session, p: &Value, cmd: &str) -> Result<Vec<usize>> {
     match p.get("ts") {
         None => Ok((0..s.set_count()).collect()),
         Some(Value::String(a)) if a == "all" => Ok((0..s.set_count()).collect()),
-        Some(v) => Ok(vec![v.as_u64().map(|t| t as usize).filter(|t| *t < s.set_count()).ok_or_else(|| bad(cmd, "invalid `ts`"))?]),
+
+        // Several sets in one command, so a file name two of them share is found before anything is written
+        Some(Value::Array(a)) => {
+            let mut sets = a.iter().map(|v| set_index(s, v, cmd)).collect::<Result<Vec<_>>>()?;
+
+            // A set listed twice is written once
+            let mut seen = std::collections::HashSet::new();
+            sets.retain(|t| seen.insert(*t));
+            Ok(sets)
+        }
+        Some(v) => Ok(vec![set_index(s, v, cmd)?]),
     }
+}
+
+fn set_index(s: &Session, v: &Value, cmd: &str) -> Result<usize> {
+    v.as_u64().and_then(|index| usize::try_from(index).ok()).filter(|index| *index < s.set_count()).ok_or_else(|| bad(cmd, "invalid `ts`"))
 }
 
 fn plan(s: &mut Session, p: &Value) -> Result<Value> {
@@ -371,7 +419,9 @@ mod native {
 
     pub fn save_to(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
         let path = if ext_of(path) == PROJECT_EXT { path.to_string() } else { format!("{path}.{PROJECT_EXT}") };
-        texturecraft_formats::save_project(Path::new(&path), &s.project_file()).map_err(fe)?;
+        let mut reservation = texturecraft_formats::RamReservation::for_save().map_err(fe)?;
+        reservation.save(Path::new(&path), &s.project_snapshot()).map_err(fe)?;
+
         if adopt {
             s.path = Some(path.clone());
             s.modified = false;
@@ -384,23 +434,32 @@ mod native {
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{absolute, open_path, read_mesh};
 
-/// `file.new {mesh, name?, resolution?, uvTiles?, template?}`: a new project from the mesh file `mesh`,
-/// remembering its path for Reimport mesh.
+/// `file.new {mesh, name?, resolution?, uvTiles?, template?, importCameras?}`: a new project from the
+/// mesh file `mesh`, remembering its path for Reimport mesh.
 #[cfg(not(target_arch = "wasm32"))]
-fn new_from_mesh(s: &mut Session, p: &Value) -> Result<Value> {
-    let path = native::path_param(p, "mesh", "file.new")?;
-    let f = native::read_mesh("file.new", path)?;
-    let template = crate::template_cmds::template_param(s, p, "file.new")?;
-    let res = u64p(p, "resolution").or(template.as_ref().map(|t| u64::from(t.resolution))).unwrap_or(2048);
-    let name = strp(p, "name").map(str::to_string).unwrap_or_else(|| stem_of(path));
-    let mut next = Session::from_mesh_bytes_tiled(&f.name, &f.bytes, u32::try_from(res).unwrap_or(0), &name, crate::commands::boolp(p, "uvTiles"))?;
+fn new_from_mesh(session: &mut Session, params: &Value) -> Result<Value> {
+    const DEFAULT_RESOLUTION_PX: u64 = 2048;
+
+    let path = native::path_param(params, "mesh", "file.new")?;
+    let template = crate::template_cmds::template_param(session, params, "file.new")?;
+    let resolution = u64p(params, "resolution").or(template.as_ref().map(|template| u64::from(template.resolution))).unwrap_or(DEFAULT_RESOLUTION_PX);
+    let name = strp(params, "name").map(str::to_string).unwrap_or_else(|| stem_of(path));
+    let uv_tiles = crate::commands::boolp(params, "uvTiles");
+    let mesh_file = native::read_mesh("file.new", path)?;
+
+    let mut next = Session::from_mesh_source(&mesh_file.name, Cow::Owned(mesh_file.bytes), u32::try_from(resolution).unwrap_or(0), &name, uv_tiles)?;
     next.doc.project.mesh_path = native::absolute(path);
-    next.log.extend(f.warnings);
-    if let Some(t) = &template {
-        next.apply_template(t);
+    next.log.extend(mesh_file.warnings);
+    if crate::commands::boolp(params, "importCameras") == Some(false) {
+        next.doc.project.cameras.clear();
     }
-    s.switch_to(next);
-    Ok(crate::inspect::session(s))
+    if let Some(template) = &template {
+        next.apply_template(template);
+    }
+
+    session.switch_to(next);
+
+    Ok(crate::inspect::session(session))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -546,7 +605,8 @@ fn write_materialx(s: &Session, sets: &[usize], opts: &ExportOptions, dir: &std:
         let mut textures: Vec<Texture> = Vec::new();
         for f in texturecraft_formats::list_outputs(&s.doc.project, ts, &mesh_name, opts).map_err(fe)? {
             let Some(input) = opts.preset.maps.get(f.map).and_then(|m| materialx::input_of_template(&m.file)) else { continue };
-            // The first tile stands for all of them: its number is written as <UDIM>.
+
+            // The first tile stands for all of them: its number is written as <UDIM>
             let file = f.udim_name.clone().unwrap_or_else(|| f.name.clone());
             let colorspace = materialx::colorspace_name(opts.space_for(f.format));
             if !textures.iter().any(|t| t.input == input) {
@@ -558,8 +618,10 @@ fn write_materialx(s: &Session, sets: &[usize], opts: &ExportOptions, dir: &std:
             warnings.push(format!("MaterialX: texture set \"{}\" has no OpenPBR maps; use the \"OpenPBR (separate maps)\" preset", set.name));
             continue;
         }
+
         let stem = texturecraft_formats::export::sanitize_file_stem(&format!("{mesh_name}_{}", set.name));
-        // Case-insensitive: Windows and macOS file systems are.
+
+        // Case-insensitive: Windows and macOS file systems are
         if !stems.insert(stem.to_ascii_lowercase()) {
             warnings.push(format!(
                 "MaterialX: texture set \"{}\" exports as \"{stem}\" like an earlier set, so its .mtlx was not written; rename one of them",
@@ -571,7 +633,8 @@ fn write_materialx(s: &Session, sets: &[usize], opts: &ExportOptions, dir: &std:
         texturecraft_formats::write_atomic(&path, materialx::write(&format!("{mesh_name}_{}", set.name), &textures, None).as_bytes()).map_err(fe)?;
         out.push(path);
     }
-    // The normalmap node only exists in a material that has a normal map.
+
+    // The normalmap node only exists in a material that has a normal map
     if normal_map_written && opts.normal_format == Some(NormalFormat::DirectX) {
         warnings.push("MaterialX: the normalmap node reads OpenGL (+Y) normals; this export wrote DirectX normals, so flip the green channel".into());
     }
@@ -660,14 +723,42 @@ use unsupported as export_textures;
 use unsupported as export_mesh;
 
 fn close(s: &mut Session, _: &Value) -> Result<Value> {
-    let next = Session::new_project("Untitled", primitives::material_ball(), "builtin:material_ball", None, 2048)?;
-    s.switch_to(next);
+    s.switch_to(Session::closed()?);
     Ok(Value::Null)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    /// `file.new` keeps the cameras stored in the mesh file unless `importCameras` is false.
+    #[test]
+    fn new_from_mesh_imports_cameras_unless_told_not_to() {
+        let dir = std::env::temp_dir().join(format!("tc_new_cameras_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("shot.gltf");
+        let gltf = json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": 36, "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],
+            "bufferViews": [{"buffer": 0, "byteLength": 36}],
+            "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0]}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "cameras": [{"name": "Shot", "type": "perspective", "perspective": {"yfov": 0.8, "znear": 0.1}}],
+            "nodes": [{"mesh": 0}, {"camera": 0, "translation": [0.5, 0.5, 4.0]}],
+            "scenes": [{"nodes": [0, 1]}],
+            "scene": 0
+        });
+        std::fs::write(&file, serde_json::to_vec(&gltf).unwrap()).unwrap();
+        let path = file.display().to_string();
+        let mut s = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
+
+        crate::execute(&mut s, "file.new", &json!({"mesh": path, "resolution": 128})).unwrap();
+        assert_eq!(s.doc.project.cameras.len(), 1, "the file's camera comes along by default");
+
+        crate::execute(&mut s, "file.new", &json!({"mesh": path, "resolution": 128, "importCameras": false})).unwrap();
+        assert!(s.doc.project.cameras.is_empty(), "importCameras false leaves the cameras out");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Reimport mesh reads the mesh file again from where it was imported, so a change saved to
     /// the file since shows up (it used to re-read the project's own copy and change nothing).
@@ -917,5 +1008,19 @@ f 1/1 2/2 3/3
         old.project.mesh_file.clear();
         let mut old = Session::from_project_bytes(&texturecraft_formats::save_project_bytes(&old).unwrap()).unwrap();
         assert_eq!(parts(&mut old), json!(["mesh"]));
+    }
+}
+
+#[cfg(all(test, target_pointer_width = "32"))]
+mod index_tests {
+    use super::*;
+
+    #[test]
+    fn export_rejects_an_index_that_would_wrap_to_the_first_set() {
+        let mut session = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
+        let wrapped_index = u64::from(u32::MAX) + 1;
+
+        assert!(crate::execute(&mut session, "export.plan", &json!({ "ts": wrapped_index })).is_err());
+        assert!(crate::execute(&mut session, "export.plan", &json!({ "ts": [wrapped_index] })).is_err());
     }
 }

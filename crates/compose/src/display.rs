@@ -84,12 +84,26 @@ impl DisplayKind {
         }
     }
 
+    /// Whether a texture reads anything but its own channels: Orm and Normal fold in the baked
+    /// maps, Extra's alpha holds the tile scale, so they differ from the default even for a set
+    /// without any of their channels.
+    fn reads_more_than_channels(self) -> bool {
+        matches!(self, DisplayKind::Orm | DisplayKind::Normal | DisplayKind::Extra)
+    }
+
     /// The texel of a set that has none of this texture's channels (the GPU clear value).
     pub fn default_texel(self) -> Vec<u8> {
         let mut px = tile_bytes(&Composite::new(&[], TILE), &BakedMaps::default(), self, 0, 0);
         px.truncate(self.bytes_per_texel());
         px
     }
+}
+
+/// Display kinds to convert for a set with `channels`: always Orm, Normal and Extra (they read
+/// baked maps or tile scales too); the others only when the set has one of their channels
+/// (otherwise every tile is the placeholder default).
+pub fn kinds_for(channels: &[Channel]) -> impl Iterator<Item = DisplayKind> + '_ {
+    DisplayKind::ALL.into_iter().filter(|k| k.reads_more_than_channels() || channels.iter().any(|c| DisplayKind::of_channel(*c) == *k))
 }
 
 fn u8_of(v: u16) -> u8 {
@@ -230,6 +244,29 @@ pub fn tile_bytes(composite: &Composite, baked: &BakedMaps, kind: DisplayKind, t
 mod tests {
     use super::*;
     use texturecraft_texel::to_u16;
+
+    #[test]
+    fn kinds_for_skips_kinds_without_channels() {
+        assert_eq!(kinds_for(&[]).collect::<Vec<_>>(), [DisplayKind::Orm, DisplayKind::Normal, DisplayKind::Extra]);
+        let with_base: Vec<_> = kinds_for(&[Channel::BaseColor, Channel::Roughness]).collect();
+        assert_eq!(with_base, [DisplayKind::BaseColor, DisplayKind::Orm, DisplayKind::Normal, DisplayKind::Extra]);
+        let with_sheen: Vec<_> = kinds_for(&[Channel::SheenColor]).collect();
+        assert_eq!(with_sheen, [DisplayKind::Orm, DisplayKind::Normal, DisplayKind::Sheen, DisplayKind::Extra]);
+    }
+
+    #[test]
+    fn kinds_skipped_for_a_set_are_its_default_texel() {
+        for channels in [&[][..], &[Channel::Roughness, Channel::Metallic], &[Channel::SheenColor, Channel::Transmission]] {
+            let mut comp = Composite::new(channels, 64);
+            for img in comp.channels.values_mut() {
+                img.set(0, 0, &[to_u16(0.3); 3]);
+            }
+            for kind in DisplayKind::ALL.into_iter().filter(|k| !kinds_for(channels).any(|n| n == *k)) {
+                let want = kind.default_texel().repeat(TILE_AREA);
+                assert!(tile_bytes(&comp, &BakedMaps::default(), kind, 0, 0) == want, "{kind:?} for {channels:?}");
+            }
+        }
+    }
 
     #[test]
     fn base_color_uses_srgb_and_opacity() {

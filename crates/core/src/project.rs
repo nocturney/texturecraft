@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{BakeSettings, BakedMap, Channel, ChannelFormat, CoreError, Effect, Layer, LayerId, LayerKind, Result};
 
+pub use crate::env_alignment::EnvAlignment;
+pub use crate::shadow_mode::ShadowMode;
+
 /// Project file format. 3: bent normal maps are in tangent space (older files hold world-space ones).
 pub const FORMAT_VERSION: u32 = 3;
 
@@ -276,6 +279,14 @@ pub struct DisplaySettings {
     /// Degrees.
     pub env_rotation: f32,
     pub shadows: bool,
+    /// What the environment turns with.
+    pub env_alignment: EnvAlignment,
+    /// The shadow map's quality (shadows only).
+    pub shadow_mode: ShadowMode,
+    /// How dark the shadows are, 0..1 (1 = the key light is fully blocked).
+    pub shadow_opacity: f32,
+    /// A single-channel view shows the channel flat, without lighting (off: the channel on a lit neutral material).
+    pub solo_unlit: bool,
     pub tone_mapping: ToneMapping,
     pub fov: f32,
     pub post_effects: bool,
@@ -339,11 +350,14 @@ pub struct Camera {
     /// Vertical field of view, degrees (orthographic: the view height at `distance`).
     pub fov: f32,
     pub ortho: bool,
+    /// Free-camera quaternion in x, y, z, w order, when the view was saved in free mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orientation: Option<[f32; 4]>,
 }
 
 impl Default for Camera {
     fn default() -> Self {
-        Camera { name: "Camera".into(), target: [0.0; 3], yaw: 0.0, pitch: 0.0, distance: 5.0, fov: 40.0, ortho: false }
+        Camera { name: "Camera".into(), target: [0.0; 3], yaw: 0.0, pitch: 0.0, distance: 5.0, fov: 40.0, ortho: false, orientation: None }
     }
 }
 
@@ -369,6 +383,10 @@ impl Default for DisplaySettings {
             env_blur: 0.35,
             env_rotation: 0.0,
             shadows: false,
+            env_alignment: EnvAlignment::World,
+            shadow_mode: ShadowMode::Lightweight,
+            shadow_opacity: 1.0,
+            solo_unlit: true,
             tone_mapping: ToneMapping::AcesFilmic,
             fov: 40.0,
             post_effects: false,

@@ -27,6 +27,9 @@ pub mod layer_cmds;
 pub mod layer_ops;
 pub mod layer_selection;
 pub mod link_cmds;
+pub mod log;
+mod log_entry;
+mod log_level;
 mod mask_bitmap;
 pub mod mask_cmds;
 pub mod mask_export;
@@ -58,6 +61,7 @@ pub mod project_cmds;
 pub mod quick_mask;
 pub mod resource_cmds;
 pub mod session;
+mod session_log;
 pub mod set_cmds;
 pub mod smart_masks;
 mod solo;
@@ -78,11 +82,12 @@ pub use bake_preview::{BakePreview, PreviewShow};
 pub use commands::{CommandSpec, check_enabled, command_specs, execute, find};
 pub use fill_hit_test::FillHitTest;
 pub use fill_mode::FillMode;
+pub use log::{LogEntry, LogLevel, SessionLog};
 pub use path_tool::PathState;
 pub use project_cmds::sample_session;
 pub use session::{
-    CloneFrom, CloneSource, Document, HISTORY_TEMPLATES, Session, SetCache, StackTarget, StencilLook, StencilState, Tool, ToolState, ViewMode, history_label,
-    stroke_template,
+    CloneFrom, CloneSource, Document, HISTORY_TEMPLATES, NORMAL_HEIGHT_MESH_LABEL, Session, SetCache, StackTarget, StencilLook, StencilState, Tool, ToolState,
+    ViewMode, history_label, stroke_template,
 };
 pub use set_cmds::{ResizeOutput, ResizeTask};
 pub use solo::Solo;
